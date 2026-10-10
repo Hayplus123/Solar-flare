@@ -1,4 +1,4 @@
-// NOAA Live Endpoints (No API Key required, 100% browser compatible)
+// NOAA Live Endpoints
 const ENDPOINTS = {
     kp: 'https://services.swpc.noaa.gov/json/planetary_k_index_1m.json',
     xray: 'https://services.swpc.noaa.gov/json/goes/primary/xrays-6-hour.json',
@@ -17,6 +17,9 @@ document.addEventListener('DOMContentLoaded', () => {
     initChart();
     initEmailIntegration();
     fetchData();
+
+    // Auto-refresh data every 1 minute (60,000 milliseconds)
+    setInterval(fetchData, 60000);
 
     // Event Listeners
     document.getElementById('refresh-btn').addEventListener('click', fetchData);
@@ -103,9 +106,8 @@ async function fetchData() {
     }
 
     try {
-        setConnectionStatus('loading', 'Fetching NOAA Data...');
+        setConnectionStatus('loading', 'Updating NOAA Data...');
 
-        // Fetch each feed independently so a single failure doesn't break the page
         let kpVal = 2.3;
         try {
             const kpRes = await fetch(ENDPOINTS.kp);
