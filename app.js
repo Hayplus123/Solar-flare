@@ -19,7 +19,7 @@ document.addEventListener('DOMContentLoaded', () => {
     fetchData();
 
     // Auto-refresh data every 1 minute (60,000 milliseconds)
-    setInterval(fetchData, 60000);
+    setInterval(fetchData, 15000);
 
     // Event Listeners
     document.getElementById('refresh-btn').addEventListener('click', fetchData);
