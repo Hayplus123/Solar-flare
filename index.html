@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SolarWatch | Space Weather & Kp Index Monitor</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- Chart.js for live data graphing -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- FontAwesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar / Navigation -->
+        <aside class="sidebar">
+            <div class="logo">
+                <i class="fa-solid fa-sun sun-icon"></i>
+                <h2>SolarWatch</h2>
+            </div>
+            <nav class="nav-links">
+                <a href="#dashboard" class="active"><i class="fa-solid fa-chart-line"></i> Dashboard</a>
+                <a href="#flares"><i class="fa-solid fa-fire"></i> Solar Flares</a>
+                <a href="#aurora"><i class="fa-solid fa-globe"></i> Aurora Forecast</a>
+                <a href="#reference"><i class="fa-solid fa-book"></i> Kp Scale Guide</a>
+            </nav>
+            <div class="sidebar-footer">
+                <div class="status-indicator">
+                    <span class="dot live-dot" id="connection-dot"></span>
+                    <span id="connection-text">NOAA API: Live</span>
+                </div>
+                <button id="toggle-mode-btn" class="btn-secondary">
+                    <i class="fa-solid fa-sliders"></i> Simulation Mode
+                </button>
+            </div>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="main-content">
+            <!-- Top Header Bar -->
+            <header class="top-bar">
+                <div class="header-title">
+                    <h1>Space Weather Intelligence</h1>
+                    <p class="subtitle">Real-time NOAA SWPC telemetry & geomagnetic activity</p>
+                </div>
+                <div class="header-meta">
+                    <div class="badge" id="utc-clock">UTC: 00:00:00</div>
+                    <button class="btn-primary" id="refresh-btn"><i class="fa-solid fa-rotate"></i> Refresh</button>
+                </div>
+            </header>
+
+            <!-- Dashboard Grid -->
+            <section id="dashboard" class="dashboard-grid">
+                <!-- Current Kp Index Card -->
+                <div class="card card-highlight">
+                    <div class="card-header">
+                        <h3>Current Kp Index</h3>
+                        <i class="fa-solid fa-gauge-high"></i>
+                    </div>
+                    <div class="metric-display">
+                        <div class="metric-value" id="current-kp">--</div>
+                        <div class="metric-label" id="kp-status-label">Loading status...</div>
+                    </div>
+                    <div class="progress-bar-container">
+                        <div class="progress-bar" id="kp-progress" style="width: 0%"></div>
+                    </div>
+                    <p class="card-note">Geomagnetic storm scale (0 - 9)</p>
+                </div>
+
+                <!-- Latest Solar Flare Card -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Latest X-Ray Flare</h3>
+                        <i class="fa-solid fa-bolt"></i>
+                    </div>
+                    <div class="metric-display">
+                        <div class="metric-value" id="current-flare">--</div>
+                        <div class="metric-label" id="flare-time">Updated: --</div>
+                    </div>
+                    <div class="badge-row">
+                        <span class="badge-tag class-a">A</span>
+                        <span class="badge-tag class-b">B</span>
+                        <span class="badge-tag class-c">C</span>
+                        <span class="badge-tag class-m">M</span>
+                        <span class="badge-tag class-x">X</span>
+                    </div>
+                </div>
+
+                <!-- Email Alerts Card (Connected to your Apps Script) -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Email Alerts (Apps Script)</h3>
+                        <i class="fa-solid fa-envelope"></i>
+                    </div>
+                    <p class="subtitle" style="margin-bottom: 0.75rem; font-size: 0.8rem;">Connected to Google Apps Script backend.</p>
+                    <div style="display: flex; gap: 0.5rem; margin-bottom: 0.75rem;">
+                        <input type="text" id="gas-url-input" placeholder="Apps Script Web App URL..." style="flex: 1; background: var(--bg-main); border: 1px solid var(--border-color); color: white; padding: 0.4rem 0.5rem; border-radius: 0.5rem; font-size: 0.75rem;">
+                        <button class="btn-primary" id="save-gas-btn" style="padding: 0.4rem 0.75rem; font-size: 0.8rem;">Save</button>
+                    </div>
+                    <button class="btn-secondary" id="test-alert-btn"><i class="fa-solid fa-paper-plane"></i> Send Test Email Alert</button>
+                </div>
+
+                <!-- Solar Wind Speed Card -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Solar Wind Speed</h3>
+                        <i class="fa-solid fa-wind"></i>
+                    </div>
+                    <div class="metric-display">
+                        <div class="metric-value" id="solar-wind-speed">--</div>
+                        <div class="metric-label">Kilometers per second (km/s)</div>
+                    </div>
+                    <div class="card-footer-info" id="solar-wind-density">
+                        Density: -- p/cm³
+                    </div>
+                </div>
+
+                <!-- Charts Section -->
+                <div class="card card-wide">
+                    <div class="card-header">
+                        <h3>24-Hour Kp Geomagnetic Activity Trend</h3>
+                        <div class="chart-controls">
+                            <button class="tab-btn active" data-chart="kp">Kp Index</button>
+                            <button class="tab-btn" data-chart="xray">X-Ray Flux</button>
+                        </div>
+                    </div>
+                    <div class="chart-container">
+                        <canvas id="spaceWeatherChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Quick Reference / Scale Guide -->
+                <div class="card card-wide" id="reference">
+                    <div class="card-header">
+                        <h3>NOAA Space Weather Scales Reference</h3>
+                        <i class="fa-solid fa-circle-info"></i>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="reference-table">
+                            <thead>
+                                <tr>
+                                    <th>Kp / Storm Level</th>
+                                    <th>Category</th>
+                                    <th>Visual Aurora Reach</th>
+                                    <th>Potential Impacts</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><span class="badge-pill g0">Kp 0 - 3</span></td>
+                                    <td>Quiet / Normal</td>
+                                    <td>High Latitudes (Aurora Borealis normal zone)</td>
+                                    <td>None</td>
+                                </tr>
+                                <tr>
+                                    <td><span class="badge-pill g1">Kp 5</span></td>
+                                    <td>G1 (Minor)</td>
+                                    <td>Quebec, Northern US, Scotland</td>
+                                    <td>Weak power grid fluctuations, minor satellite operations impact.</td>
+                                </tr>
+                                <tr>
+                                    <td><span class="badge-pill g2">Kp 6</span></td>
+                                    <td>G2 (Moderate)</td>
+                                    <td>New York, Idaho, Central UK</td>
+                                    <td>Voltage alarms at high latitudes, HF radio propagation fading at higher latitudes.</td>
+                                </tr>
+                                <tr>
+                                    <td><span class="badge-pill g3">Kp 7</span></td>
+                                    <td>G3 (Strong)</td>
+                                    <td>Illinois, Oregon, Northern Germany</td>
+                                    <td>Voltage correction required; satellite navigation (GPS) degraded intermittently.</td>
+                                </tr>
+                                <tr>
+                                    <td><span class="badge-pill g4">Kp 8</span></td>
+                                    <td>G4 (Severe)</td>
+                                    <td>Southern US, Northern France</td>
+                                    <td>Widespread voltage control problems; possible transformer damage; HF radio blackout.</td>
+                                </tr>
+                                <tr>
+                                    <td><span class="badge-pill g5">Kp 9</span></td>
+                                    <td>G5 (Extreme)</td>
+                                    <td>Texas, Florida, Mediterranean</td>
+                                    <td>Complete HF radio blackout; severe grid shutdown risk; pipeline current issues.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
