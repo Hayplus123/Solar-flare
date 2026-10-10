@@ -1,10 +1,3 @@
-// NOAA SWPC Live Data Endpoints & Application Logic
-const ENDPOINTS = {
-    kp: 'https://services.swpc.noaa.gov/json/planetary_k_index_1m.json',
-    xray: 'https://services.swpc.noaa.gov/json/goes/primary/xrays-6-hour.json',
-    solarWind: 'https://services.swpc.noaa.gov/products/solar-wind/plasma-1-day.json'
-};
-
 // Your pre-configured Google Apps Script Web App URL
 const DEFAULT_GAS_URL = 'https://script.google.com/macros/s/AKfycby2h9nSrgR7yNdrn3JdHLKcejY-gp2KK2eaxM-dWPeSJWFSRCrJOAK_zMwd1WAVCB8/exec';
 
@@ -59,6 +52,7 @@ function saveGasUrl() {
     if (url) {
         localStorage.setItem('solar_gas_url', url);
         alert('Google Apps Script URL saved successfully!');
+        fetchData();
     } else {
         alert('Please enter a valid Web App URL.');
     }
@@ -96,41 +90,43 @@ async function sendTestAlert() {
     }
 }
 
-// Fetch NOAA Data with fallback to Simulation
+// Fetch Live NOAA Data via Google Apps Script Proxy
 async function fetchData() {
     if (isSimulationMode) {
         loadSimulationData();
         return;
     }
 
+    const gasUrl = localStorage.getItem('solar_gas_url') || DEFAULT_GAS_URL;
+    if (!gasUrl) {
+        loadSimulationData();
+        return;
+    }
+
     try {
-        setConnectionStatus('loading', 'Fetching NOAA Data...');
+        setConnectionStatus('loading', 'Fetching Live NOAA Data...');
         
-        // Fetch Kp Index
-        const kpRes = await fetch(ENDPOINTS.kp);
-        const kpData = await kpRes.json();
-        const latestKp = kpData[kpData.length - 1];
+        const response = await fetch(gasUrl);
+        const result = await response.json();
 
-        // Fetch X-Ray Flare
-        const xrayRes = await fetch(ENDPOINTS.xray);
-        const xrayData = await xrayRes.json();
-        const latestXray = xrayData[xrayData.length - 1];
+        if (result.status === 'success') {
+            const latestKp = result.kp;
+            const latestXray = result.xray;
+            const latestWind = result.wind;
 
-        // Fetch Solar Wind
-        const windRes = await fetch(ENDPOINTS.solarWind);
-        const windData = await windRes.json();
-        const latestWind = windData[windData.length - 1];
+            updateUI({
+                kp: latestKp.kp || latestKp.estimated_kp || 2.33,
+                xrayFlux: latestXray.flux || 1e-7,
+                solarWindSpeed: latestWind[1] || 410,
+                solarWindDensity: latestWind[2] || 5.2
+            });
 
-        updateUI({
-            kp: latestKp.kp || latestKp.estimated_kp || 2.33,
-            xrayFlux: latestXray.flux || 1e-7,
-            solarWindSpeed: latestWind[1] || 410,
-            solarWindDensity: latestWind[2] || 5.2
-        });
-
-        setConnectionStatus('live', 'NOAA API: Live');
+            setConnectionStatus('live', 'NOAA API: Live');
+        } else {
+            throw new Error('Proxy returned error');
+        }
     } catch (error) {
-        console.warn('CORS or Network error fetching NOAA endpoints. Switching to simulation mode.', error);
+        console.warn('Network error fetching via proxy. Switching to simulation mode.', error);
         setConnectionStatus('sim', 'API Offline (Simulation Active)');
         loadSimulationData();
     }
