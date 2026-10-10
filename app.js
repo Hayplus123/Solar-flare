@@ -1,5 +1,6 @@
-// Your pre-configured Google Apps Script Web App URL
-const DEFAULT_GAS_URL = 'https://script.google.com/macros/s/AKfycby2h9nSrgR7yNdrn3JdHLKcejY-gp2KK2eaxM-dWPeSJWFSRCrJOAK_zMwd1WAVCB8/exec';
+// NASA & NOAA Endpoints
+const NASA_API_KEY = '1YdEOeQbs9pviBTMXhyBa02ZPiEsb2mhggFu8NG1';
+const GAS_ALERT_URL = 'https://script.google.com/macros/s/AKfycby2h9nSrgR7yNdrn3JdHLKcejY-gp2KK2eaxM-dWPeSJWFSRCrJOAK_zMwd1WAVCB8/exec';
 
 let isSimulationMode = false;
 let weatherChart = null;
@@ -41,7 +42,7 @@ function initClock() {
 function initEmailIntegration() {
     let savedUrl = localStorage.getItem('solar_gas_url');
     if (!savedUrl) {
-        savedUrl = DEFAULT_GAS_URL;
+        savedUrl = GAS_ALERT_URL;
         localStorage.setItem('solar_gas_url', savedUrl);
     }
     document.getElementById('gas-url-input').value = savedUrl;
@@ -52,14 +53,13 @@ function saveGasUrl() {
     if (url) {
         localStorage.setItem('solar_gas_url', url);
         alert('Google Apps Script URL saved successfully!');
-        fetchData();
     } else {
         alert('Please enter a valid Web App URL.');
     }
 }
 
 async function sendTestAlert() {
-    const url = localStorage.getItem('solar_gas_url') || document.getElementById('gas-url-input').value.trim();
+    const url = localStorage.getItem('solar_gas_url') || GAS_ALERT_URL;
     if (!url) {
         alert('Please save your Google Apps Script Web App URL first.');
         return;
@@ -84,49 +84,54 @@ async function sendTestAlert() {
         alert('Test alert triggered! Check your Gmail inbox shortly.');
     } catch (error) {
         console.error('Error sending alert:', error);
-        alert('Failed to send alert. Check your Web App URL.');
+        alert('Failed to send alert.');
     } finally {
         btn.innerHTML = '<i class="fa-solid fa-paper-plane"></i> Send Test Email Alert';
     }
 }
 
-// Fetch Live Telemetry via Google Apps Script Proxy
+// Fetch Live Data Directly from NOAA & NASA DONKI
 async function fetchData() {
     if (isSimulationMode) {
         loadSimulationData();
         return;
     }
 
-    const gasUrl = localStorage.getItem('solar_gas_url') || DEFAULT_GAS_URL;
-    if (!gasUrl) {
-        loadSimulationData();
-        return;
-    }
-
     try {
-        setConnectionStatus('loading', 'Fetching Live NOAA Data...');
-        
-        const response = await fetch(gasUrl);
-        const result = await response.json();
+        setConnectionStatus('loading', 'Fetching NASA & NOAA...');
 
-        if (result.status === 'success') {
-            const latestKp = result.kp;
-            const latestXray = result.xray;
-            const latestWind = result.wind;
+        // Calculate date range for NASA DONKI (last 7 days)
+        const today = new Date();
+        const priorDate = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
+        const endDate = today.toISOString().slice(0, 10);
+        const startDate = priorDate.toISOString().slice(0, 10);
 
-            updateUI({
-                kp: latestKp.kp || latestKp.estimated_kp || 2.33,
-                xrayFlux: latestXray.flux || 1e-7,
-                solarWindSpeed: latestWind[1] || 410,
-                solarWindDensity: latestWind[2] || 5.2
-            });
+        // Fetch concurrently from NOAA and NASA APIs
+        const [kpRes, nasaRes, windRes] = await Promise.all([
+            fetch('https://services.swpc.noaa.gov/json/planetary_k_index_1m.json'),
+            fetch(`https://api.nasa.gov/DONKI/FLR?startDate=${startDate}&endDate=${endDate}&api_key=${NASA_API_KEY}`),
+            fetch('https://services.swpc.noaa.gov/products/solar-wind/plasma-1-day.json')
+        ]);
 
-            setConnectionStatus('live', 'NOAA API: Live');
-        } else {
-            throw new Error('Proxy returned error');
-        }
+        const kpData = await kpRes.json();
+        const flaresData = await nasaRes.json();
+        const windData = await windRes.json();
+
+        const latestKp = kpData[kpData.length - 1];
+        const latestFlare = Array.isArray(flaresData) && flaresData.length > 0 ? flaresData[flaresData.length - 1] : null;
+        const latestWind = windData[windData.length - 1];
+
+        updateUI({
+            kp: latestKp.kp || latestKp.estimated_kp || 2.33,
+            flareClass: latestFlare ? latestFlare.classType : 'C1.0',
+            flareTime: latestFlare && latestFlare.peakTime ? `Peak: ${latestFlare.peakTime.slice(11, 16)} UTC` : 'Recent Event',
+            solarWindSpeed: latestWind[1] || 410,
+            solarWindDensity: latestWind[2] || 5.2
+        });
+
+        setConnectionStatus('live', 'NASA/NOAA API: Live');
     } catch (error) {
-        console.warn('Network error fetching via proxy. Switching to simulation mode.', error);
+        console.warn('Direct fetch error (likely CORS/Network restriction). Falling back to simulation.', error);
         setConnectionStatus('sim', 'API Offline (Simulation Active)');
         loadSimulationData();
     }
@@ -157,7 +162,8 @@ function setConnectionStatus(status, text) {
 function loadSimulationData() {
     const simulatedData = {
         kp: (Math.random() * 4 + 1).toFixed(2),
-        xrayFlux: (Math.random() * 5e-6 + 1e-8),
+        flareClass: ['C2.1', 'M1.4', 'B4.5', 'X1.2'][Math.floor(Math.random() * 4)],
+        flareTime: 'Peak: 14:25 UTC',
         solarWindSpeed: (350 + Math.random() * 150).toFixed(1),
         solarWindDensity: (3 + Math.random() * 8).toFixed(1)
     };
@@ -175,17 +181,9 @@ function updateUI(data) {
     else if (kpNum >= 4) statusText = 'Active Geomagnetic Activity';
     document.getElementById('kp-status-label').textContent = statusText;
 
-    // Solar Flare X-Ray Flux classification
-    const flux = Number(data.xrayFlux);
-    let flareClass = 'B-Class';
-    if (flux >= 1e-4) flareClass = 'X-Class (Major)';
-    else if (flux >= 1e-5) flareClass = 'M-Class (Moderate)';
-    else if (flux >= 1e-6) flareClass = 'C-Class (Small)';
-    else if (flux >= 1e-7) flareClass = 'B-Class';
-    else flareClass = 'A-Class';
-
-    document.getElementById('current-flare').textContent = flareClass;
-    document.getElementById('flare-time').textContent = `Flux: ${flux.toExponential(2)} W/m²`;
+    // Solar Flare (NASA DONKI data)
+    document.getElementById('current-flare').textContent = data.flareClass;
+    document.getElementById('flare-time').textContent = data.flareTime;
 
     // Solar Wind
     document.getElementById('solar-wind-speed').textContent = Math.round(data.solarWindSpeed);
@@ -251,13 +249,11 @@ function updateChartData(latestValue = 2.5) {
             latestValue
         ];
     } else {
-        weatherChart.data.datasets[0].label = 'X-Ray Flux (W/m²)';
+        weatherChart.data.datasets[0].label = 'Solar Flare Activity Index';
         weatherChart.data.datasets[0].borderColor = '#10b981';
         weatherChart.data.datasets[0].backgroundColor = 'rgba(16, 185, 129, 0.1)';
-        weatherChart.options.scales.y.max = 0.00001;
-        weatherChart.data.datasets[0].data = [
-            2e-7, 3e-7, 1.5e-7, 4e-7, 8e-7, 5e-7, 6e-7
-        ];
+        weatherChart.options.scales.y.max = 5;
+        weatherChart.data.datasets[0].data = [1, 2, 1, 3, 4, 2, 3];
     }
     weatherChart.update();
 }
