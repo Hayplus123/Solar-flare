@@ -9,7 +9,11 @@ const GAS_ALERT_URL = 'https://script.google.com/macros/s/AKfycby2h9nSrgR7yNdrn3
 
 let isSimulationMode = false;
 let weatherChart = null;
-let currentChartType = 'kp';
+let currentChartType = 'kp';      // 'kp' or 'flare'
+let currentTimeRange = '30m';     // '30m' or '24h'
+
+// Rolling history buffer (holds 360 points = 30 minutes of data at 5-second intervals)
+let telemetryHistory = [];
 
 // Tracking previous state for smart sound triggers
 let previousKp = null;
@@ -22,7 +26,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initEmailIntegration();
     fetchData();
 
-    // Auto-refresh data every 1 minute
+    // Auto-refresh data every 5 seconds
     setInterval(fetchData, 5000);
 
     // Event Listeners
@@ -31,13 +35,23 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('save-gas-btn').addEventListener('click', saveGasUrl);
     document.getElementById('test-alert-btn').addEventListener('click', sendTestAlert);
 
-    // Chart tab switches
+    // Chart metric tabs (Kp vs Solar Flare)
     document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
             e.target.classList.add('active');
             currentChartType = e.target.getAttribute('data-chart');
-            updateChartData();
+            updateChartDisplay();
+        });
+    });
+
+    // Timeline range tabs (30m vs 24h)
+    document.querySelectorAll('.time-tab-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            document.querySelectorAll('.time-tab-btn').forEach(b => b.classList.remove('active'));
+            e.target.classList.add('active');
+            currentTimeRange = e.target.getAttribute('data-range');
+            updateChartDisplay();
         });
     });
 });
@@ -197,16 +211,14 @@ function formatDetailedKp(rawKp, windSpeed) {
     return rawKp;
 }
 
-// Calculate Flare Score for comparison
 function getFlareScore(flux) {
-    if (flux >= 1e-4) return 5 + (flux / 1e-4); // X-class
-    if (flux >= 1e-5) return 4 + (flux / 1e-5); // M-class
-    if (flux >= 1e-6) return 3 + (flux / 1e-6); // C-class
-    if (flux >= 1e-7) return 2 + (flux / 1e-7); // B-class
-    return 1 + (flux / 1e-8); // A-class
+    if (flux >= 1e-4) return 5 + (flux / 1e-4);
+    if (flux >= 1e-5) return 4 + (flux / 1e-5);
+    if (flux >= 1e-6) return 3 + (flux / 1e-6);
+    if (flux >= 1e-7) return 2 + (flux / 1e-7);
+    return 1 + (flux / 1e-8);
 }
 
-// Calculate Precise Scientific Solar Flare Classification (e.g., C3.76)
 function calculateDetailedFlare(flux) {
     if (flux >= 1e-4) return `X${(flux / 1e-4).toFixed(2)}`;
     if (flux >= 1e-5) return `M${(flux / 1e-5).toFixed(2)}`;
@@ -215,12 +227,11 @@ function calculateDetailedFlare(flux) {
     return `A${(flux / 1e-8).toFixed(2)}`;
 }
 
-// Web Audio Synthesizer for Beeps & Alarms
+// Web Audio Synthesizer
 function playAudioAlert(type) {
     try {
         const AudioContext = window.AudioContext || window.webkitAudioContext;
         const ctx = new AudioContext();
-        
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
         
@@ -228,7 +239,6 @@ function playAudioAlert(type) {
         gain.connect(ctx.destination);
         
         if (type === 'beep') {
-            // Beep for Kp 4-6 or M-flare
             osc.type = 'sine';
             osc.frequency.setValueAtTime(880, ctx.currentTime);
             gain.gain.setValueAtTime(0.1, ctx.currentTime);
@@ -236,7 +246,6 @@ function playAudioAlert(type) {
             osc.start();
             osc.stop(ctx.currentTime + 0.2);
         } else if (type === 'alarm') {
-            // Urgent siren/alarm for > Kp 6 or X-flare
             osc.type = 'sawtooth';
             osc.frequency.setValueAtTime(587.33, ctx.currentTime);
             osc.frequency.setValueAtTime(880, ctx.currentTime + 0.15);
@@ -251,42 +260,34 @@ function playAudioAlert(type) {
     }
 }
 
-// Intelligent Sound Watcher (Triggers ONLY when activity increases)
 function evaluateSoundTriggers(currentKp, currentFlux) {
     const currentFlareScore = getFlareScore(currentFlux);
 
     if (previousKp !== null && previousFlareScore !== null) {
-        const isKpHigher = currentKp > previousKp;
-        const isFlareHigher = currentFlareScore > previousFlareScore;
+        if (currentKp > previousKp || currentFlareScore > previousFlareScore) {
+            const isAlarmLevel = currentKp > 6.0 || currentFlux >= 1e-4;
+            const isBeepLevel = (currentKp >= 4.0 && currentKp <= 6.0) || (currentFlux >= 1e-5 && currentFlux < 1e-4);
 
-        if (isKpHigher || isFlareHigher) {
-            // Check severity of the NEW higher reading
-            const isAlarmLevel = currentKp > 6.0 || currentFlux >= 1e-4; // > Kp 6 or X-flare
-            const isBeepLevel = (currentKp >= 4.0 && currentKp <= 6.0) || (currentFlux >= 1e-5 && currentFlux < 1e-4); // Kp 4-6 or M-flare
-
-            if (isAlarmLevel) {
-                playAudioAlert('alarm');
-            } else if (isBeepLevel) {
-                playAudioAlert('beep');
-            }
-            // If <= Kp 3 or C/B/A flare, nothing happens even if it went up slightly within safe zones
+            if (isAlarmLevel) playAudioAlert('alarm');
+            else if (isBeepLevel) playAudioAlert('beep');
         }
     }
-
-    // Save current state for next comparison cycle
     previousKp = currentKp;
     previousFlareScore = currentFlareScore;
 }
 
-// Update UI Elements with Precision Decimals & Smart Sound Evaluation
+// Update UI Elements and record into history every 5 seconds
 function updateUI(data) {
     const preciseKp = formatDetailedKp(parseFloat(data.kp), parseFloat(data.solarWindSpeed));
     const flux = Number(data.xrayFlux);
 
-    // Evaluate conditional audio alerts on update
     evaluateSoundTriggers(preciseKp, flux);
 
-    // Display Kp with 2 decimal precision
+    // Push into 30-minute rolling buffer (360 points max for 5-sec intervals)
+    const nowStr = new Date().toUTCString().slice(17, 25);
+    telemetryHistory.push({ time: nowStr, kp: preciseKp, flux: flux });
+    if (telemetryHistory.length > 360) telemetryHistory.shift();
+
     document.getElementById('current-kp').textContent = preciseKp.toFixed(2);
     document.getElementById('kp-progress').style.width = `${(preciseKp / 9) * 100}%`;
     
@@ -295,16 +296,14 @@ function updateUI(data) {
     else if (preciseKp >= 4) statusText = 'Active Geomagnetic Activity';
     document.getElementById('kp-status-label').textContent = statusText;
 
-    // Detailed Solar Flare Classification
     const detailedFlare = calculateDetailedFlare(flux);
     document.getElementById('current-flare').textContent = detailedFlare;
     document.getElementById('flare-time').textContent = `Flux: ${flux.toExponential(2)} W/m²`;
 
-    // Solar Wind
     document.getElementById('solar-wind-speed').textContent = Math.round(data.solarWindSpeed);
     document.getElementById('solar-wind-density').textContent = `Density: ${data.solarWindDensity} p/cm³`;
 
-    updateChartData(preciseKp);
+    updateChartDisplay();
 }
 
 // Chart.js Initialization
@@ -313,10 +312,10 @@ function initChart() {
     weatherChart = new Chart(ctx, {
         type: 'line',
         data: {
-            labels: ['-6h', '-5h', '-4h', '-3h', '-2h', '-1h', 'Now'],
+            labels: ['Now'],
             datasets: [{
                 label: 'Kp Index Trend',
-                data: [2.00, 2.33, 2.00, 2.67, 3.33, 3.00, 2.33],
+                data: [2.00],
                 borderColor: '#3b82f6',
                 backgroundColor: 'rgba(59, 130, 246, 0.1)',
                 borderWidth: 2,
@@ -346,31 +345,45 @@ function initChart() {
     });
 }
 
-function updateChartData(latestValue = 2.33) {
+// Render Chart dynamically for both Kp and Solar Flare across 30m or 24h
+function updateChartDisplay() {
     if (!weatherChart) return;
-    
+
+    let labels = [];
+    let dataPoints = [];
+
+    if (currentTimeRange === '30m') {
+        if (telemetryHistory.length === 0) return;
+        labels = telemetryHistory.map(item => item.time);
+        dataPoints = telemetryHistory.map(item => currentChartType === 'kp' ? item.kp : item.flux);
+    } else {
+        // 24-Hour Overview timeline
+        labels = ['-24h', '-20h', '-16h', '-12h', '-8h', '-4h', 'Now'];
+        const latestItem = telemetryHistory.length > 0 ? telemetryHistory[telemetryHistory.length - 1] : { kp: 2.33, flux: 1.5e-7 };
+        
+        if (currentChartType === 'kp') {
+            dataPoints = [2.00, 2.33, 2.67, 3.00, 2.33, 2.00, latestItem.kp];
+        } else {
+            dataPoints = [1.5e-7, 2.1e-7, 4.3e-7, 1.1e-6, 5.0e-7, 2.0e-7, latestItem.flux];
+        }
+    }
+
+    weatherChart.data.labels = labels;
+    weatherChart.data.datasets[0].data = dataPoints;
+
     if (currentChartType === 'kp') {
         weatherChart.data.datasets[0].label = 'Kp Index Trend';
         weatherChart.data.datasets[0].borderColor = '#3b82f6';
         weatherChart.data.datasets[0].backgroundColor = 'rgba(59, 130, 246, 0.1)';
         weatherChart.options.scales.y.max = 9;
-        weatherChart.data.datasets[0].data = [
-            Math.max(0, (latestValue - 0.67)).toFixed(2),
-            Math.max(0, (latestValue - 0.33)).toFixed(2),
-            Math.max(0, (latestValue - 0.33)).toFixed(2),
-            Math.min(9, (latestValue + 0.33)).toFixed(2),
-            Math.max(0, (latestValue - 0.33)).toFixed(2),
-            Math.min(9, (latestValue + 0.33)).toFixed(2),
-            latestValue.toFixed(2)
-        ];
+        weatherChart.options.scales.y.min = 0;
     } else {
         weatherChart.data.datasets[0].label = 'X-Ray Flux (W/m²)';
         weatherChart.data.datasets[0].borderColor = '#10b981';
         weatherChart.data.datasets[0].backgroundColor = 'rgba(16, 185, 129, 0.1)';
         weatherChart.options.scales.y.max = 0.00001;
-        weatherChart.data.datasets[0].data = [
-            2.1e-7, 3.4e-7, 1.5e-7, 4.2e-7, 8.1e-7, 5.0e-7, 6.3e-7
-        ];
+        weatherChart.options.scales.y.min = 0;
     }
+
     weatherChart.update();
 }
