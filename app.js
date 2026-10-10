@@ -19,7 +19,7 @@ document.addEventListener('DOMContentLoaded', () => {
     fetchData();
 
     // Auto-refresh data every 1 minute (60,000 milliseconds)
-    setInterval(fetchData, 15000);
+    setInterval(fetchData, 60000);
 
     // Event Listeners
     document.getElementById('refresh-btn').addEventListener('click', fetchData);
@@ -108,12 +108,12 @@ async function fetchData() {
     try {
         setConnectionStatus('loading', 'Updating NOAA Data...');
 
-        let kpVal = 2.3;
+        let kpVal = 2.33;
         try {
             const kpRes = await fetch(ENDPOINTS.kp);
             const kpData = await kpRes.json();
             const latest = kpData[kpData.length - 1];
-            kpVal = parseFloat(latest.kp || latest.estimated_kp || 2.3);
+            kpVal = parseFloat(latest.kp || latest.estimated_kp || 2.33);
         } catch (e) { console.warn('Kp fetch failed', e); }
 
         let xrayFlux = 1e-7;
@@ -170,21 +170,37 @@ function setConnectionStatus(status, text) {
     label.textContent = text;
 }
 
-// Load Simulated Telemetry
+// Load Simulated Telemetry with Precision
 function loadSimulationData() {
     const simulatedData = {
-        kp: (Math.random() * 4 + 1).toFixed(2),
-        xrayFlux: Math.random() * 5e-6 + 1e-8,
+        kp: (Math.random() * 5 + 1).toFixed(2),
+        xrayFlux: Math.random() * 8e-6 + 5e-7,
         solarWindSpeed: (350 + Math.random() * 150).toFixed(1),
         solarWindDensity: (3 + Math.random() * 8).toFixed(1)
     };
     updateUI(simulatedData);
 }
 
-// Update UI Elements
+// Calculate Precise Scientific Solar Flare Classification (e.g., C3.76, M1.42)
+function calculateDetailedFlare(flux) {
+    if (flux >= 1e-4) {
+        return `X${(flux / 1e-4).toFixed(2)}`;
+    } else if (flux >= 1e-5) {
+        return `M${(flux / 1e-5).toFixed(2)}`;
+    } else if (flux >= 1e-6) {
+        return `C${(flux / 1e-6).toFixed(2)}`;
+    } else if (flux >= 1e-7) {
+        return `B${(flux / 1e-7).toFixed(2)}`;
+    } else {
+        return `A${(flux / 1e-8).toFixed(2)}`;
+    }
+}
+
+// Update UI Elements with High Precision
 function updateUI(data) {
     const kpNum = parseFloat(data.kp);
-    document.getElementById('current-kp').textContent = kpNum.toFixed(1);
+    // Display Kp with 2 decimal precision (e.g., 6.45)
+    document.getElementById('current-kp').textContent = kpNum.toFixed(2);
     document.getElementById('kp-progress').style.width = `${(kpNum / 9) * 100}%`;
     
     let statusText = 'Quiet Conditions';
@@ -192,16 +208,11 @@ function updateUI(data) {
     else if (kpNum >= 4) statusText = 'Active Geomagnetic Activity';
     document.getElementById('kp-status-label').textContent = statusText;
 
-    // Solar Flare X-Ray Flux classification
+    // Detailed Solar Flare Classification (e.g., C3.76)
     const flux = Number(data.xrayFlux);
-    let flareClass = 'B-Class';
-    if (flux >= 1e-4) flareClass = 'X-Class (Major)';
-    else if (flux >= 1e-5) flareClass = 'M-Class (Moderate)';
-    else if (flux >= 1e-6) flareClass = 'C-Class (Small)';
-    else if (flux >= 1e-7) flareClass = 'B-Class';
-    else flareClass = 'A-Class';
+    const detailedFlare = calculateDetailedFlare(flux);
 
-    document.getElementById('current-flare').textContent = flareClass;
+    document.getElementById('current-flare').textContent = detailedFlare;
     document.getElementById('flare-time').textContent = `Flux: ${flux.toExponential(2)} W/m²`;
 
     // Solar Wind
@@ -220,7 +231,7 @@ function initChart() {
             labels: ['-6h', '-5h', '-4h', '-3h', '-2h', '-1h', 'Now'],
             datasets: [{
                 label: 'Kp Index Trend',
-                data: [2.1, 2.3, 2.0, 2.7, 3.1, 2.9, 2.5],
+                data: [2.10, 2.35, 2.00, 2.70, 3.15, 2.90, 2.50],
                 borderColor: '#3b82f6',
                 backgroundColor: 'rgba(59, 130, 246, 0.1)',
                 borderWidth: 2,
@@ -259,13 +270,13 @@ function updateChartData(latestValue = 2.5) {
         weatherChart.data.datasets[0].backgroundColor = 'rgba(59, 130, 246, 0.1)';
         weatherChart.options.scales.y.max = 9;
         weatherChart.data.datasets[0].data = [
-            (latestValue - 0.5).toFixed(1),
-            (latestValue - 0.3).toFixed(1),
-            (latestValue - 0.4).toFixed(1),
-            (latestValue + 0.1).toFixed(1),
-            (latestValue - 0.2).toFixed(1),
-            (latestValue + 0.2).toFixed(1),
-            latestValue
+            (latestValue - 0.50).toFixed(2),
+            (latestValue - 0.30).toFixed(2),
+            (latestValue - 0.40).toFixed(2),
+            (latestValue + 0.10).toFixed(2),
+            (latestValue - 0.20).toFixed(2),
+            (latestValue + 0.20).toFixed(2),
+            latestValue.toFixed(2)
         ];
     } else {
         weatherChart.data.datasets[0].label = 'X-Ray Flux (W/m²)';
@@ -273,7 +284,7 @@ function updateChartData(latestValue = 2.5) {
         weatherChart.data.datasets[0].backgroundColor = 'rgba(16, 185, 129, 0.1)';
         weatherChart.options.scales.y.max = 0.00001;
         weatherChart.data.datasets[0].data = [
-            2e-7, 3e-7, 1.5e-7, 4e-7, 8e-7, 5e-7, 6e-7
+            2.1e-7, 3.4e-7, 1.5e-7, 4.2e-7, 8.1e-7, 5.0e-7, 6.3e-7
         ];
     }
     weatherChart.update();
