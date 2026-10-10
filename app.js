@@ -11,6 +11,10 @@ let isSimulationMode = false;
 let weatherChart = null;
 let currentChartType = 'kp';
 
+// Tracking previous state for smart sound triggers
+let previousKp = null;
+let previousFlareScore = null;
+
 // Initialize App
 document.addEventListener('DOMContentLoaded', () => {
     initClock();
@@ -170,7 +174,7 @@ function setConnectionStatus(status, text) {
     label.textContent = text;
 }
 
-// Load Simulated Telemetry with Precision Decimals
+// Load Simulated Telemetry
 function loadSimulationData() {
     const randomKp = Math.floor(Math.random() * 5) + 1;
     const fractionalChoice = [0.00, 0.33, 0.67][Math.floor(Math.random() * 3)];
@@ -183,10 +187,9 @@ function loadSimulationData() {
     updateUI(simulatedData);
 }
 
-// Convert raw Kp into scientific fractional thirds (.00, .33, .67) if it's a flat integer
+// Convert raw Kp into scientific fractional thirds
 function formatDetailedKp(rawKp, windSpeed) {
     let base = Math.floor(rawKp);
-    // If NOAA returns a flat integer, use solar wind speed to add a realistic scientific sub-index (.33 or .67)
     if (rawKp === base) {
         let offset = (windSpeed > 450) ? 0.67 : (windSpeed > 400 ? 0.33 : 0.00);
         return Math.min(9, base + offset);
@@ -194,26 +197,96 @@ function formatDetailedKp(rawKp, windSpeed) {
     return rawKp;
 }
 
+// Calculate Flare Score for comparison
+function getFlareScore(flux) {
+    if (flux >= 1e-4) return 5 + (flux / 1e-4); // X-class
+    if (flux >= 1e-5) return 4 + (flux / 1e-5); // M-class
+    if (flux >= 1e-6) return 3 + (flux / 1e-6); // C-class
+    if (flux >= 1e-7) return 2 + (flux / 1e-7); // B-class
+    return 1 + (flux / 1e-8); // A-class
+}
+
 // Calculate Precise Scientific Solar Flare Classification (e.g., C3.76)
 function calculateDetailedFlare(flux) {
-    if (flux >= 1e-4) {
-        return `X${(flux / 1e-4).toFixed(2)}`;
-    } else if (flux >= 1e-5) {
-        return `M${(flux / 1e-5).toFixed(2)}`;
-    } else if (flux >= 1e-6) {
-        return `C${(flux / 1e-6).toFixed(2)}`;
-    } else if (flux >= 1e-7) {
-        return `B${(flux / 1e-7).toFixed(2)}`;
-    } else {
-        return `A${(flux / 1e-8).toFixed(2)}`;
+    if (flux >= 1e-4) return `X${(flux / 1e-4).toFixed(2)}`;
+    if (flux >= 1e-5) return `M${(flux / 1e-5).toFixed(2)}`;
+    if (flux >= 1e-6) return `C${(flux / 1e-6).toFixed(2)}`;
+    if (flux >= 1e-7) return `B${(flux / 1e-7).toFixed(2)}`;
+    return `A${(flux / 1e-8).toFixed(2)}`;
+}
+
+// Web Audio Synthesizer for Beeps & Alarms
+function playAudioAlert(type) {
+    try {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        const ctx = new AudioContext();
+        
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        
+        if (type === 'beep') {
+            // Beep for Kp 4-6 or M-flare
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(880, ctx.currentTime);
+            gain.gain.setValueAtTime(0.1, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2);
+            osc.start();
+            osc.stop(ctx.currentTime + 0.2);
+        } else if (type === 'alarm') {
+            // Urgent siren/alarm for > Kp 6 or X-flare
+            osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(587.33, ctx.currentTime);
+            osc.frequency.setValueAtTime(880, ctx.currentTime + 0.15);
+            osc.frequency.setValueAtTime(587.33, ctx.currentTime + 0.3);
+            gain.gain.setValueAtTime(0.15, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.45);
+            osc.start();
+            osc.stop(ctx.currentTime + 0.45);
+        }
+    } catch (e) {
+        console.warn('Audio playback restricted.', e);
     }
 }
 
-// Update UI Elements with High Precision Decimals
+// Intelligent Sound Watcher (Triggers ONLY when activity increases)
+function evaluateSoundTriggers(currentKp, currentFlux) {
+    const currentFlareScore = getFlareScore(currentFlux);
+
+    if (previousKp !== null && previousFlareScore !== null) {
+        const isKpHigher = currentKp > previousKp;
+        const isFlareHigher = currentFlareScore > previousFlareScore;
+
+        if (isKpHigher || isFlareHigher) {
+            // Check severity of the NEW higher reading
+            const isAlarmLevel = currentKp > 6.0 || currentFlux >= 1e-4; // > Kp 6 or X-flare
+            const isBeepLevel = (currentKp >= 4.0 && currentKp <= 6.0) || (currentFlux >= 1e-5 && currentFlux < 1e-4); // Kp 4-6 or M-flare
+
+            if (isAlarmLevel) {
+                playAudioAlert('alarm');
+            } else if (isBeepLevel) {
+                playAudioAlert('beep');
+            }
+            // If <= Kp 3 or C/B/A flare, nothing happens even if it went up slightly within safe zones
+        }
+    }
+
+    // Save current state for next comparison cycle
+    previousKp = currentKp;
+    previousFlareScore = currentFlareScore;
+}
+
+// Update UI Elements with Precision Decimals & Smart Sound Evaluation
 function updateUI(data) {
     const preciseKp = formatDetailedKp(parseFloat(data.kp), parseFloat(data.solarWindSpeed));
-    
-    // Display Kp with 2 decimal precision (e.g., 2.33 or 4.67)
+    const flux = Number(data.xrayFlux);
+
+    // Evaluate conditional audio alerts on update
+    evaluateSoundTriggers(preciseKp, flux);
+
+    // Display Kp with 2 decimal precision
     document.getElementById('current-kp').textContent = preciseKp.toFixed(2);
     document.getElementById('kp-progress').style.width = `${(preciseKp / 9) * 100}%`;
     
@@ -222,10 +295,8 @@ function updateUI(data) {
     else if (preciseKp >= 4) statusText = 'Active Geomagnetic Activity';
     document.getElementById('kp-status-label').textContent = statusText;
 
-    // Detailed Solar Flare Classification (e.g., C3.76)
-    const flux = Number(data.xrayFlux);
+    // Detailed Solar Flare Classification
     const detailedFlare = calculateDetailedFlare(flux);
-
     document.getElementById('current-flare').textContent = detailedFlare;
     document.getElementById('flare-time').textContent = `Flux: ${flux.toExponential(2)} W/m²`;
 
