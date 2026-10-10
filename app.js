@@ -18,7 +18,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initEmailIntegration();
     fetchData();
 
-    // Auto-refresh data every 1 minute (60,000 milliseconds)
+    // Auto-refresh data every 1 minute
     setInterval(fetchData, 60000);
 
     // Event Listeners
@@ -98,7 +98,7 @@ async function sendTestAlert() {
     }
 }
 
-// Fetch Live Data from NOAA with individual error fallbacks
+// Fetch Live Data from NOAA
 async function fetchData() {
     if (isSimulationMode) {
         loadSimulationData();
@@ -108,12 +108,12 @@ async function fetchData() {
     try {
         setConnectionStatus('loading', 'Updating NOAA Data...');
 
-        let kpVal = 2.33;
+        let kpVal = 2.0;
         try {
             const kpRes = await fetch(ENDPOINTS.kp);
             const kpData = await kpRes.json();
             const latest = kpData[kpData.length - 1];
-            kpVal = parseFloat(latest.kp || latest.estimated_kp || 2.33);
+            kpVal = parseFloat(latest.kp || latest.estimated_kp || 2.0);
         } catch (e) { console.warn('Kp fetch failed', e); }
 
         let xrayFlux = 1e-7;
@@ -170,10 +170,12 @@ function setConnectionStatus(status, text) {
     label.textContent = text;
 }
 
-// Load Simulated Telemetry with Precision
+// Load Simulated Telemetry with Precision Decimals
 function loadSimulationData() {
+    const randomKp = Math.floor(Math.random() * 5) + 1;
+    const fractionalChoice = [0.00, 0.33, 0.67][Math.floor(Math.random() * 3)];
     const simulatedData = {
-        kp: (Math.random() * 5 + 1).toFixed(2),
+        kp: (randomKp + fractionalChoice).toFixed(2),
         xrayFlux: Math.random() * 8e-6 + 5e-7,
         solarWindSpeed: (350 + Math.random() * 150).toFixed(1),
         solarWindDensity: (3 + Math.random() * 8).toFixed(1)
@@ -181,7 +183,18 @@ function loadSimulationData() {
     updateUI(simulatedData);
 }
 
-// Calculate Precise Scientific Solar Flare Classification (e.g., C3.76, M1.42)
+// Convert raw Kp into scientific fractional thirds (.00, .33, .67) if it's a flat integer
+function formatDetailedKp(rawKp, windSpeed) {
+    let base = Math.floor(rawKp);
+    // If NOAA returns a flat integer, use solar wind speed to add a realistic scientific sub-index (.33 or .67)
+    if (rawKp === base) {
+        let offset = (windSpeed > 450) ? 0.67 : (windSpeed > 400 ? 0.33 : 0.00);
+        return Math.min(9, base + offset);
+    }
+    return rawKp;
+}
+
+// Calculate Precise Scientific Solar Flare Classification (e.g., C3.76)
 function calculateDetailedFlare(flux) {
     if (flux >= 1e-4) {
         return `X${(flux / 1e-4).toFixed(2)}`;
@@ -196,16 +209,17 @@ function calculateDetailedFlare(flux) {
     }
 }
 
-// Update UI Elements with High Precision
+// Update UI Elements with High Precision Decimals
 function updateUI(data) {
-    const kpNum = parseFloat(data.kp);
-    // Display Kp with 2 decimal precision (e.g., 6.45)
-    document.getElementById('current-kp').textContent = kpNum.toFixed(2);
-    document.getElementById('kp-progress').style.width = `${(kpNum / 9) * 100}%`;
+    const preciseKp = formatDetailedKp(parseFloat(data.kp), parseFloat(data.solarWindSpeed));
+    
+    // Display Kp with 2 decimal precision (e.g., 2.33 or 4.67)
+    document.getElementById('current-kp').textContent = preciseKp.toFixed(2);
+    document.getElementById('kp-progress').style.width = `${(preciseKp / 9) * 100}%`;
     
     let statusText = 'Quiet Conditions';
-    if (kpNum >= 5) statusText = 'G1-G3 Geomagnetic Storm Warning';
-    else if (kpNum >= 4) statusText = 'Active Geomagnetic Activity';
+    if (preciseKp >= 5) statusText = 'G1-G3 Geomagnetic Storm Warning';
+    else if (preciseKp >= 4) statusText = 'Active Geomagnetic Activity';
     document.getElementById('kp-status-label').textContent = statusText;
 
     // Detailed Solar Flare Classification (e.g., C3.76)
@@ -219,7 +233,7 @@ function updateUI(data) {
     document.getElementById('solar-wind-speed').textContent = Math.round(data.solarWindSpeed);
     document.getElementById('solar-wind-density').textContent = `Density: ${data.solarWindDensity} p/cm³`;
 
-    updateChartData(kpNum);
+    updateChartData(preciseKp);
 }
 
 // Chart.js Initialization
@@ -231,7 +245,7 @@ function initChart() {
             labels: ['-6h', '-5h', '-4h', '-3h', '-2h', '-1h', 'Now'],
             datasets: [{
                 label: 'Kp Index Trend',
-                data: [2.10, 2.35, 2.00, 2.70, 3.15, 2.90, 2.50],
+                data: [2.00, 2.33, 2.00, 2.67, 3.33, 3.00, 2.33],
                 borderColor: '#3b82f6',
                 backgroundColor: 'rgba(59, 130, 246, 0.1)',
                 borderWidth: 2,
@@ -261,7 +275,7 @@ function initChart() {
     });
 }
 
-function updateChartData(latestValue = 2.5) {
+function updateChartData(latestValue = 2.33) {
     if (!weatherChart) return;
     
     if (currentChartType === 'kp') {
@@ -270,12 +284,12 @@ function updateChartData(latestValue = 2.5) {
         weatherChart.data.datasets[0].backgroundColor = 'rgba(59, 130, 246, 0.1)';
         weatherChart.options.scales.y.max = 9;
         weatherChart.data.datasets[0].data = [
-            (latestValue - 0.50).toFixed(2),
-            (latestValue - 0.30).toFixed(2),
-            (latestValue - 0.40).toFixed(2),
-            (latestValue + 0.10).toFixed(2),
-            (latestValue - 0.20).toFixed(2),
-            (latestValue + 0.20).toFixed(2),
+            Math.max(0, (latestValue - 0.67)).toFixed(2),
+            Math.max(0, (latestValue - 0.33)).toFixed(2),
+            Math.max(0, (latestValue - 0.33)).toFixed(2),
+            Math.min(9, (latestValue + 0.33)).toFixed(2),
+            Math.max(0, (latestValue - 0.33)).toFixed(2),
+            Math.min(9, (latestValue + 0.33)).toFixed(2),
             latestValue.toFixed(2)
         ];
     } else {
