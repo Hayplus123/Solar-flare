@@ -36,7 +36,6 @@ if (savedDate === todayUtcStr) {
         console.warn('Error loading saved storage:', e);
     }
 } else {
-    // New UTC day (00:00 UTC reset): clear old history and states
     localStorage.removeItem('solar_history');
     localStorage.removeItem('solar_prev_kp');
     localStorage.removeItem('solar_prev_flare');
@@ -50,7 +49,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initChart();
     initEmailIntegration();
 
-    // Render baseline probabilities instantly so it never shows --% on load
+    // Render baseline probabilities instantly on load
     updateUI({ kp: 2.0, xrayFlux: 1e-7, solarWindSpeed: 410, solarWindDensity: 5.2 });
 
     fetchData();
@@ -271,17 +270,25 @@ function calculateDetailedFlare(flux) {
     return `A${(flux / 1e-8).toFixed(2)}`;
 }
 
-// Real-Time Probability & Forecasting Calculator
+// Threshold-Anchored Probability & Forecasting Calculator
 function calculateProbabilities(windSpeed, windDensity, flux, preciseKp) {
-    let kpProb = Math.min(98, Math.max(5, Math.round(((windSpeed - 350) / 300) * 65 + (windDensity > 8 ? 20 : 5) + (preciseKp * 4))));
-    let kpEstPeak = Math.min(9.0, preciseKp + (windSpeed > 500 ? 1.5 : 0.6)).toFixed(2);
-    let kpEta = windSpeed > 500 ? "Imminent (1–3 hrs)" : (windSpeed > 420 ? "Expected in 4–8 hrs" : "Quiet Outlook (~12h)");
+    // 1. Probability of reaching Kp >= 5 (G1 Storm threshold)
+    let kpSpeedFactor = Math.max(0, (windSpeed - 400) / 250); // Wind speeds over 400km/s drive storm risks
+    let kpDensityFactor = windDensity > 7 ? 0.2 : 0.05;
+    let baseKpProb = ((preciseKp / 5.0) * 0.5 + kpSpeedFactor * 0.3 + kpDensityFactor) * 100;
+    let kpProb = Math.min(98, Math.max(5, Math.round(baseKpProb)));
+    let kpEstPeak = Math.min(9.0, preciseKp + (windSpeed > 500 ? 1.5 : 0.5)).toFixed(2);
+    let kpEta = windSpeed > 500 ? "1–3 hrs" : (windSpeed > 430 ? "4–8 hrs" : "12+ hrs");
 
-    let flareProb = Math.min(99, Math.max(5, Math.round((flux / 1e-6) * 12 + (flux > 5e-6 ? 45 : 10))));
-    let flareEstClass = flux >= 1e-4 ? "X-Class Risk" : (flux >= 1e-5 ? "M-Class Risk" : "C-Class Background");
-    let flareEta = flux > 3e-6 ? "Next 3–6 hours" : "Stable Window (24h)";
+    // 2. Probability of an M-Class or X-Class Flare (Flux >= 1e-5 W/m²)
+    // If current flux is in high C-class or M-class, probability spikes
+    let flareRatio = flux / 1e-5; // 1.0 = M1.0 threshold
+    let baseFlareProb = Math.min(99, Math.max(5, Math.round(flareRatio * 40 + (flux > 1e-6 ? 20 : 5))));
+    let flareProb = flux >= 1e-5 ? Math.max(85, baseFlareProb) : baseFlareProb;
+    let flareRiskClass = flux >= 1e-4 ? "X-Class Imminent" : (flux >= 1e-5 ? "M-Class Active" : "C-Class Baseline");
+    let flareEta = flux >= 5.0e-6 ? "Next 1–3 hours" : "Stable Window (24h)";
 
-    return { kpProb, kpEstPeak, kpEta, flareProb, flareEstClass, flareEta };
+    return { kpProb, kpEstPeak, kpEta, flareProb, flareRiskClass, flareEta };
 }
 
 // Web Audio Synthesizer
@@ -341,7 +348,7 @@ function evaluateSoundTriggers(currentKp, currentFlux) {
     localStorage.setItem('solar_prev_flare', previousFlareScore);
 }
 
-// Update UI Elements safely with Live Probabilities & Storage
+// Update UI Elements safely
 function updateUI(data) {
     const preciseKp = formatDetailedKp(parseFloat(data.kp), parseFloat(data.solarWindSpeed));
     const flux = Number(data.xrayFlux);
@@ -384,16 +391,16 @@ function updateUI(data) {
     const windDensityEl = document.getElementById('solar-wind-density');
     if (windDensityEl) windDensityEl.textContent = `Density: ${data.solarWindDensity} p/cm³`;
 
-    // Probability Tab Updates
+    // Threshold-Anchored Probability Tab Updates
     const probKpVal = document.getElementById('prob-kp-val');
     if (probKpVal) probKpVal.textContent = `${probs.kpProb}%`;
     const probKpEta = document.getElementById('prob-kp-eta');
-    if (probKpEta) probKpEta.textContent = `Peak ~${probs.kpEstPeak} | ETA: ${probs.kpEta}`;
+    if (probKpEta) probKpEta.textContent = `Est. Peak Kp ~${probs.kpEstPeak} | Window: ${probs.kpEta}`;
 
     const probFlareVal = document.getElementById('prob-flare-val');
     if (probFlareVal) probFlareVal.textContent = `${probs.flareProb}%`;
     const probFlareEta = document.getElementById('prob-flare-eta');
-    if (probFlareEta) probFlareEta.textContent = `${probs.flareEstClass} | ETA: ${probs.flareEta}`;
+    if (probFlareEta) probFlareEta.textContent = `${probs.flareRiskClass} | Window: ${probs.flareEta}`;
 
     updateChartDisplay();
 }
