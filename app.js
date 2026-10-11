@@ -241,7 +241,7 @@ function calculateDetailedFlare(flux) {
     return `A${(flux / 1e-8).toFixed(2)}`;
 }
 
-// Web Audio Synthesizer
+// good Web Audio Synthesizer
 function playAudioAlert(type) {
     try {
         const AudioContext = window.AudioContext || window.webkitAudioContext;
