@@ -12,11 +12,13 @@ let weatherChart = null;
 let currentChartType = 'kp';      // 'kp' or 'flare'
 let currentTimeRange = '30m';     // '30m' or '24h'
 
+// Rolling history buffer (holds 360 points = 30 minutes of data at 5-second intervals)
+let telemetryHistory = [];
+
 // --- DAILY PERSISTENCE & 00:00 UTC RESET LOGIC ---
 const todayUtcStr = new Date().toISOString().slice(0, 10);
 const savedDate = localStorage.getItem('solar_date');
 
-let telemetryHistory = [];
 let previousKp = null;
 let previousFlareScore = null;
 
@@ -247,7 +249,7 @@ function formatDetailedKp(rawKp, windSpeed) {
     return rawKp;
 }
 
-// Normalized Flare Score (Clean ranges: A=0-1, B=1-2, C=2-3, M=3-4, X=4+)
+// Normalized Flare Score
 function getFlareScore(flux) {
     if (flux >= 1e-4) return 4 + Math.min(5, (flux / 1e-4) / 10);
     if (flux >= 1e-5) return 3 + Math.min(1, (flux / 1e-5) / 10);
@@ -262,6 +264,28 @@ function calculateDetailedFlare(flux) {
     if (flux >= 1e-6) return `C${(flux / 1e-6).toFixed(2)}`;
     if (flux >= 1e-7) return `B${(flux / 1e-7).toFixed(2)}`;
     return `A${(flux / 1e-8).toFixed(2)}`;
+}
+
+// Real-Time Probability & Forecasting Engine
+function calculateProbabilities(windSpeed, windDensity, flux, preciseKp) {
+    // Kp / Geomagnetic Storm Probability Estimates
+    let kpProb = Math.min(98, Math.max(5, Math.round(((windSpeed - 350) / 300) * 65 + (windDensity > 8 ? 20 : 5) + (preciseKp * 4))));
+    let kpEstPeak = Math.min(9.0, preciseKp + (windSpeed > 500 ? 1.5 : 0.6)).toFixed(2);
+    let kpEta = windSpeed > 500 ? "Imminent (1–3 hrs)" : (windSpeed > 420 ? "Expected in 4–8 hrs" : "Quiet Outlook (~12h)");
+
+    // Solar Flare Probability Estimates
+    let flareProb = Math.min(99, Math.max(5, Math.round((flux / 1e-6) * 12 + (flux > 5e-6 ? 45 : 10))));
+    let flareEstClass = flux >= 1e-4 ? "X-Class Risk" : (flux >= 1e-5 ? "M-Class Risk" : "C-Class Background");
+    let flareEta = flux > 3e-6 ? "Next 3–6 hours" : "Stable Window (24h)";
+
+    return {
+        kpProb,
+        kpEstPeak,
+        kpEta,
+        flareProb,
+        flareEstClass,
+        flareEta
+    };
 }
 
 // Web Audio Synthesizer
@@ -317,7 +341,7 @@ function evaluateSoundTriggers(currentKp, currentFlux) {
     localStorage.setItem('solar_prev_flare', previousFlareScore);
 }
 
-// Update UI Elements safely
+// Update UI Elements safely with Live Probabilities
 function updateUI(data) {
     const preciseKp = formatDetailedKp(parseFloat(data.kp), parseFloat(data.solarWindSpeed));
     const flux = Number(data.xrayFlux);
@@ -331,6 +355,9 @@ function updateUI(data) {
 
     localStorage.setItem('solar_history', JSON.stringify(telemetryHistory));
     localStorage.setItem('solar_date', new Date().toISOString().slice(0, 10));
+
+    // Calculate live probabilities
+    const probs = calculateProbabilities(data.solarWindSpeed, data.solarWindDensity, flux, preciseKp);
 
     const kpEl = document.getElementById('current-kp');
     if (kpEl) kpEl.textContent = preciseKp.toFixed(2);
@@ -357,6 +384,13 @@ function updateUI(data) {
 
     const windDensityEl = document.getElementById('solar-wind-density');
     if (windDensityEl) windDensityEl.textContent = `Density: ${data.solarWindDensity} p/cm³`;
+
+    // Render Probabilities into UI elements (if you add elements with these IDs to your HTML)
+    const kpProbEl = document.getElementById('kp-probability');
+    if (kpProbEl) kpProbEl.textContent = `${probs.kpProb}% (Peak ~${probs.kpEstPeak} in ${probs.kpEta})`;
+
+    const flareProbEl = document.getElementById('flare-probability');
+    if (flareProbEl) flareProbEl.textContent = `${probs.flareProb}% (${probs.flareEstClass} - ${probs.flareEta})`;
 
     updateChartDisplay();
 }
@@ -402,7 +436,7 @@ function initChart() {
     });
 }
 
-// Render Chart dynamically with Auto-Scaling (Zooms out/adjusts based on active data)
+// Render Chart dynamically with Auto-Scaling
 function updateChartDisplay() {
     if (!weatherChart) return;
 
@@ -432,13 +466,12 @@ function updateChartDisplay() {
         weatherChart.data.datasets[0].borderColor = '#3b82f6';
         weatherChart.data.datasets[0].backgroundColor = 'rgba(59, 130, 246, 0.1)';
         weatherChart.options.scales.y.min = 0;
-        weatherChart.options.scales.y.max = 9; // Kp is strictly 0-9
+        weatherChart.options.scales.y.max = 9;
     } else {
         weatherChart.data.datasets[0].label = 'Solar Flare Level (Class Scale)';
         weatherChart.data.datasets[0].borderColor = '#10b981';
         weatherChart.data.datasets[0].backgroundColor = 'rgba(16, 185, 129, 0.1)';
         
-        // Dynamic Auto-Scaling: Automatically zooms out/adjusts Y-axis to fit current flare levels!
         weatherChart.options.scales.y.min = 0;
         const maxFlare = Math.max(...dataPoints, 2.0);
         weatherChart.options.scales.y.max = Math.min(6, Math.ceil(maxFlare + 1)); 
