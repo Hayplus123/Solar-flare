@@ -395,7 +395,7 @@ function updateUI(data) {
     updateChartDisplay();
 }
 
-// Chart.js Initialization
+// Chart.js Initializations
 function initChart() {
     const canvas = document.getElementById('spaceWeatherChart');
     if (!canvas) return;
