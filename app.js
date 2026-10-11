@@ -36,6 +36,7 @@ if (savedDate === todayUtcStr) {
         console.warn('Error loading saved storage:', e);
     }
 } else {
+    // New UTC day (00:00 UTC reset): clear old history and states
     localStorage.removeItem('solar_history');
     localStorage.removeItem('solar_prev_kp');
     localStorage.removeItem('solar_prev_flare');
@@ -272,17 +273,14 @@ function calculateDetailedFlare(flux) {
 
 // Threshold-Anchored Probability & Forecasting Calculator
 function calculateProbabilities(windSpeed, windDensity, flux, preciseKp) {
-    // 1. Probability of reaching Kp >= 5 (G1 Storm threshold)
-    let kpSpeedFactor = Math.max(0, (windSpeed - 400) / 250); // Wind speeds over 400km/s drive storm risks
+    let kpSpeedFactor = Math.max(0, (windSpeed - 400) / 250);
     let kpDensityFactor = windDensity > 7 ? 0.2 : 0.05;
     let baseKpProb = ((preciseKp / 5.0) * 0.5 + kpSpeedFactor * 0.3 + kpDensityFactor) * 100;
     let kpProb = Math.min(98, Math.max(5, Math.round(baseKpProb)));
     let kpEstPeak = Math.min(9.0, preciseKp + (windSpeed > 500 ? 1.5 : 0.5)).toFixed(2);
     let kpEta = windSpeed > 500 ? "1–3 hrs" : (windSpeed > 430 ? "4–8 hrs" : "12+ hrs");
 
-    // 2. Probability of an M-Class or X-Class Flare (Flux >= 1e-5 W/m²)
-    // If current flux is in high C-class or M-class, probability spikes
-    let flareRatio = flux / 1e-5; // 1.0 = M1.0 threshold
+    let flareRatio = flux / 1e-5;
     let baseFlareProb = Math.min(99, Math.max(5, Math.round(flareRatio * 40 + (flux > 1e-6 ? 20 : 5))));
     let flareProb = flux >= 1e-5 ? Math.max(85, baseFlareProb) : baseFlareProb;
     let flareRiskClass = flux >= 1e-4 ? "X-Class Imminent" : (flux >= 1e-5 ? "M-Class Active" : "C-Class Baseline");
@@ -353,11 +351,12 @@ function updateUI(data) {
     const preciseKp = formatDetailedKp(parseFloat(data.kp), parseFloat(data.solarWindSpeed));
     const flux = Number(data.xrayFlux);
     const flareScore = getFlareScore(flux);
+    const flareStr = calculateDetailedFlare(flux);
 
     evaluateSoundTriggers(preciseKp, flux);
 
     const nowStr = new Date().toUTCString().slice(17, 25);
-    telemetryHistory.push({ time: nowStr, kp: preciseKp, flux: flux, flareScore: flareScore });
+    telemetryHistory.push({ time: nowStr, kp: preciseKp, flux: flux, flareScore: flareScore, flareStr: flareStr });
     if (telemetryHistory.length > 360) telemetryHistory.shift();
 
     localStorage.setItem('solar_history', JSON.stringify(telemetryHistory));
@@ -391,7 +390,7 @@ function updateUI(data) {
     const windDensityEl = document.getElementById('solar-wind-density');
     if (windDensityEl) windDensityEl.textContent = `Density: ${data.solarWindDensity} p/cm³`;
 
-    // Threshold-Anchored Probability Tab Updates
+    // Probability Tab Updates
     const probKpVal = document.getElementById('prob-kp-val');
     if (probKpVal) probKpVal.textContent = `${probs.kpProb}%`;
     const probKpEta = document.getElementById('prob-kp-eta');
@@ -428,12 +427,40 @@ function initChart() {
             responsive: true,
             maintainAspectRatio: false,
             plugins: {
-                legend: { display: false }
+                legend: { display: false },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            if (currentChartType === 'kp') {
+                                return `Kp Index: ${context.raw.toFixed(2)}`;
+                            } else {
+                                const index = context.dataIndex;
+                                if (currentTimeRange === '30m' && telemetryHistory[index]) {
+                                    return `Solar Flare: ${telemetryHistory[index].flareStr}`;
+                                } else {
+                                    return `Solar Flare Level: Class Score ${context.raw.toFixed(2)}`;
+                                }
+                            }
+                        }
+                    }
+                }
             },
             scales: {
                 y: {
                     grid: { color: '#213253' },
-                    ticks: { color: '#94a3b8' },
+                    ticks: { 
+                        color: '#94a3b8',
+                        callback: function(value) {
+                            if (currentChartType === 'flare') {
+                                if (value >= 5) return 'X-Class';
+                                if (value >= 4) return 'M-Class';
+                                if (value >= 3) return 'C-Class';
+                                if (value >= 2) return 'B-Class';
+                                return 'A-Class';
+                            }
+                            return value;
+                        }
+                    },
                     min: 0,
                     max: 9
                 },
@@ -446,7 +473,7 @@ function initChart() {
     });
 }
 
-// Render Chart dynamically with Auto-Scaling
+// Render Chart dynamically with Auto-Scaling & Class formatting
 function updateChartDisplay() {
     if (!weatherChart) return;
 
@@ -478,7 +505,7 @@ function updateChartDisplay() {
         weatherChart.options.scales.y.min = 0;
         weatherChart.options.scales.y.max = 9;
     } else {
-        weatherChart.data.datasets[0].label = 'Solar Flare Level (Class Scale)';
+        weatherChart.data.datasets[0].label = 'Solar Flare Class Level';
         weatherChart.data.datasets[0].borderColor = '#10b981';
         weatherChart.data.datasets[0].backgroundColor = 'rgba(16, 185, 129, 0.1)';
         
