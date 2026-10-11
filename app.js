@@ -19,7 +19,7 @@ let telemetryHistory = [];
 let previousKp = localStorage.getItem('solar_prev_kp') !== null ? parseFloat(localStorage.getItem('solar_prev_kp')) : null;
 let previousFlareScore = localStorage.getItem('solar_prev_flare') !== null ? parseFloat(localStorage.getItem('solar_prev_flare')) : null;
 
-// Initialize App
+// Initialize App safely
 document.addEventListener('DOMContentLoaded', () => {
     initClock();
     initChart();
@@ -29,11 +29,18 @@ document.addEventListener('DOMContentLoaded', () => {
     // Auto-refresh data every 5 seconds
     setInterval(fetchData, 5000);
 
-    // Event Listeners
-    document.getElementById('refresh-btn').addEventListener('click', fetchData);
-    document.getElementById('toggle-mode-btn').addEventListener('click', toggleSimulationMode);
-    document.getElementById('save-gas-btn').addEventListener('click', saveGasUrl);
-    document.getElementById('test-alert-btn').addEventListener('click', sendTestAlert);
+    // Event Listeners with safety checks
+    const refreshBtn = document.getElementById('refresh-btn');
+    if (refreshBtn) refreshBtn.addEventListener('click', fetchData);
+
+    const toggleModeBtn = document.getElementById('toggle-mode-btn');
+    if (toggleModeBtn) toggleModeBtn.addEventListener('click', toggleSimulationMode);
+
+    const saveGasBtn = document.getElementById('save-gas-btn');
+    if (saveGasBtn) saveGasBtn.addEventListener('click', saveGasUrl);
+
+    const testAlertBtn = document.getElementById('test-alert-btn');
+    if (testAlertBtn) testAlertBtn.addEventListener('click', sendTestAlert);
 
     // Chart metric tabs (Kp vs Solar Flare)
     document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -59,8 +66,11 @@ document.addEventListener('DOMContentLoaded', () => {
 // Live UTC Clock
 function initClock() {
     setInterval(() => {
-        const now = new Date();
-        document.getElementById('utc-clock').textContent = `UTC: ${now.toUTCString().slice(17, 25)}`;
+        const clockEl = document.getElementById('utc-clock');
+        if (clockEl) {
+            const now = new Date();
+            clockEl.textContent = `UTC: ${now.toUTCString().slice(17, 25)}`;
+        }
     }, 1000);
 }
 
@@ -71,11 +81,13 @@ function initEmailIntegration() {
         savedUrl = GAS_ALERT_URL;
         localStorage.setItem('solar_gas_url', savedUrl);
     }
-    document.getElementById('gas-url-input').value = savedUrl;
+    const inputEl = document.getElementById('gas-url-input');
+    if (inputEl) inputEl.value = savedUrl;
 }
 
 function saveGasUrl() {
-    const url = document.getElementById('gas-url-input').value.trim();
+    const inputEl = document.getElementById('gas-url-input');
+    const url = inputEl ? inputEl.value.trim() : '';
     if (url) {
         localStorage.setItem('solar_gas_url', url);
         alert('Google Apps Script URL saved successfully!');
@@ -91,13 +103,15 @@ async function sendTestAlert() {
         return;
     }
 
+    const kpEl = document.getElementById('current-kp');
+    const flareEl = document.getElementById('current-flare');
     const testData = {
-        kp: document.getElementById('current-kp').textContent,
-        flare: document.getElementById('current-flare').textContent
+        kp: kpEl ? kpEl.textContent : '2.00',
+        flare: flareEl ? flareEl.textContent : 'C1.00'
     };
 
     const btn = document.getElementById('test-alert-btn');
-    btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Sending...';
+    if (btn) btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Sending...';
 
     try {
         await fetch(url, {
@@ -112,7 +126,7 @@ async function sendTestAlert() {
         console.error('Error sending alert:', error);
         alert('Failed to send alert.');
     } finally {
-        btn.innerHTML = '<i class="fa-solid fa-paper-plane"></i> Send Test Email Alert';
+        if (btn) btn.innerHTML = '<i class="fa-solid fa-paper-plane"></i> Send Test Email Alert';
     }
 }
 
@@ -172,11 +186,11 @@ function toggleSimulationMode() {
     isSimulationMode = !isSimulationMode;
     const btn = document.getElementById('toggle-mode-btn');
     if (isSimulationMode) {
-        btn.innerHTML = '<i class="fa-solid fa-cloud"></i> Live API Mode';
+        if (btn) btn.innerHTML = '<i class="fa-solid fa-cloud"></i> Live API Mode';
         setConnectionStatus('sim', 'Simulation Mode');
         loadSimulationData();
     } else {
-        btn.innerHTML = '<i class="fa-solid fa-sliders"></i> Simulation Mode';
+        if (btn) btn.innerHTML = '<i class="fa-solid fa-sliders"></i> Simulation Mode';
         fetchData();
     }
 }
@@ -184,8 +198,8 @@ function toggleSimulationMode() {
 function setConnectionStatus(status, text) {
     const dot = document.getElementById('connection-dot');
     const label = document.getElementById('connection-text');
-    dot.className = 'dot ' + (status === 'live' ? 'live-dot' : status === 'sim' ? 'sim-dot' : '');
-    label.textContent = text;
+    if (dot) dot.className = 'dot ' + (status === 'live' ? 'live-dot' : status === 'sim' ? 'sim-dot' : '');
+    if (label) label.textContent = text;
 }
 
 // Load Simulated Telemetry
@@ -273,46 +287,57 @@ function evaluateSoundTriggers(currentKp, currentFlux) {
         }
     }
 
-    // Update state and save to localStorage so it survives page refreshes
     previousKp = currentKp;
     previousFlareScore = currentFlareScore;
     localStorage.setItem('solar_prev_kp', previousKp);
     localStorage.setItem('solar_prev_flare', previousFlareScore);
 }
 
-// Update UI Elements and record into history every 5 seconds
+// Update UI Elements safely
 function updateUI(data) {
     const preciseKp = formatDetailedKp(parseFloat(data.kp), parseFloat(data.solarWindSpeed));
     const flux = Number(data.xrayFlux);
 
     evaluateSoundTriggers(preciseKp, flux);
 
-    // Push into 30-minute rolling buffer (360 points max for 5-sec intervals)
     const nowStr = new Date().toUTCString().slice(17, 25);
     telemetryHistory.push({ time: nowStr, kp: preciseKp, flux: flux });
     if (telemetryHistory.length > 360) telemetryHistory.shift();
 
-    document.getElementById('current-kp').textContent = preciseKp.toFixed(2);
-    document.getElementById('kp-progress').style.width = `${(preciseKp / 9) * 100}%`;
+    const kpEl = document.getElementById('current-kp');
+    if (kpEl) kpEl.textContent = preciseKp.toFixed(2);
+
+    const progressEl = document.getElementById('kp-progress');
+    if (progressEl) progressEl.style.width = `${(preciseKp / 9) * 100}%`;
     
     let statusText = 'Quiet Conditions';
     if (preciseKp >= 5) statusText = 'G1-G3 Geomagnetic Storm Warning';
     else if (preciseKp >= 4) statusText = 'Active Geomagnetic Activity';
-    document.getElementById('kp-status-label').textContent = statusText;
+    
+    const labelEl = document.getElementById('kp-status-label');
+    if (labelEl) labelEl.textContent = statusText;
 
     const detailedFlare = calculateDetailedFlare(flux);
-    document.getElementById('current-flare').textContent = detailedFlare;
-    document.getElementById('flare-time').textContent = `Flux: ${flux.toExponential(2)} W/m²`;
+    const flareEl = document.getElementById('current-flare');
+    if (flareEl) flareEl.textContent = detailedFlare;
 
-    document.getElementById('solar-wind-speed').textContent = Math.round(data.solarWindSpeed);
-    document.getElementById('solar-wind-density').textContent = `Density: ${data.solarWindDensity} p/cm³`;
+    const flareTimeEl = document.getElementById('flare-time');
+    if (flareTimeEl) flareTimeEl.textContent = `Flux: ${flux.toExponential(2)} W/m²`;
+
+    const windSpeedEl = document.getElementById('solar-wind-speed');
+    if (windSpeedEl) windSpeedEl.textContent = Math.round(data.solarWindSpeed);
+
+    const windDensityEl = document.getElementById('solar-wind-density');
+    if (windDensityEl) windDensityEl.textContent = `Density: ${data.solarWindDensity} p/cm³`;
 
     updateChartDisplay();
 }
 
 // Chart.js Initialization
 function initChart() {
-    const ctx = document.getElementById('spaceWeatherChart').getContext('2d');
+    const canvas = document.getElementById('spaceWeatherChart');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
     weatherChart = new Chart(ctx, {
         type: 'line',
         data: {
@@ -349,7 +374,7 @@ function initChart() {
     });
 }
 
-// Render Chart dynamically for both Kp and Solar Flare across 30m or 24h
+// Render Chart dynamically
 function updateChartDisplay() {
     if (!weatherChart) return;
 
@@ -361,9 +386,32 @@ function updateChartDisplay() {
         labels = telemetryHistory.map(item => item.time);
         dataPoints = telemetryHistory.map(item => currentChartType === 'kp' ? item.kp : item.flux);
     } else {
-        // 24-Hour Overview timeline
         labels = ['-24h', '-20h', '-16h', '-12h', '-8h', '-4h', 'Now'];
         const latestItem = telemetryHistory.length > 0 ? telemetryHistory[telemetryHistory.length - 1] : { kp: 2.33, flux: 1.5e-7 };
         
         if (currentChartType === 'kp') {
             dataPoints = [2.00, 2.33, 2.67, 3.00, 2.33, 2.00, latestItem.kp];
+        } else {
+            dataPoints = [1.5e-7, 2.1e-7, 4.3e-7, 1.1e-6, 5.0e-7, 2.0e-7, latestItem.flux];
+        }
+    }
+
+    weatherChart.data.labels = labels;
+    weatherChart.data.datasets[0].data = dataPoints;
+
+    if (currentChartType === 'kp') {
+        weatherChart.data.datasets[0].label = 'Kp Index Trend';
+        weatherChart.data.datasets[0].borderColor = '#3b82f6';
+        weatherChart.data.datasets[0].backgroundColor = 'rgba(59, 130, 246, 0.1)';
+        weatherChart.options.scales.y.max = 9;
+        weatherChart.options.scales.y.min = 0;
+    } else {
+        weatherChart.data.datasets[0].label = 'X-Ray Flux (W/m²)';
+        weatherChart.data.datasets[0].borderColor = '#10b981';
+        weatherChart.data.datasets[0].backgroundColor = 'rgba(16, 185, 129, 0.1)';
+        weatherChart.options.scales.y.max = 0.00001;
+        weatherChart.options.scales.y.min = 0;
+    }
+
+    weatherChart.update();
+}
