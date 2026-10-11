@@ -12,7 +12,7 @@ let weatherChart = null;
 let currentChartType = 'kp';      // 'kp' or 'flare'
 let currentTimeRange = '30m';     // '30m' or '24h'
 
-// Rolling history buffer (holds 360 points = 30 minutes of data at 5-second intervals)
+// Rolling history buffer storing Kp, raw flux, and calculated flare score
 let telemetryHistory = [];
 
 // Load previous state from localStorage so it persists across page refreshes
@@ -225,12 +225,13 @@ function formatDetailedKp(rawKp, windSpeed) {
     return rawKp;
 }
 
+// Map flux into a clean numerical score (e.g. C3.76 -> 3.76, M1.42 -> 4.14, X2.0 -> 5.2)
 function getFlareScore(flux) {
-    if (flux >= 1e-4) return 5 + (flux / 1e-4);
-    if (flux >= 1e-5) return 4 + (flux / 1e-5);
-    if (flux >= 1e-6) return 3 + (flux / 1e-6);
-    if (flux >= 1e-7) return 2 + (flux / 1e-7);
-    return 1 + (flux / 1e-8);
+    if (flux >= 1e-4) return 5 + Math.min(9, flux / 1e-4); // X-class (5.0+)
+    if (flux >= 1e-5) return 4 + (flux / 1e-5);             // M-class (4.0 - 5.0)
+    if (flux >= 1e-6) return 3 + (flux / 1e-6);             // C-class (3.0 - 4.0)
+    if (flux >= 1e-7) return 2 + (flux / 1e-7);             // B-class (2.0 - 3.0)
+    return 1 + Math.max(0, flux / 1e-8);                    // A-class (1.0 - 2.0)
 }
 
 function calculateDetailedFlare(flux) {
@@ -298,11 +299,12 @@ function evaluateSoundTriggers(currentKp, currentFlux) {
 function updateUI(data) {
     const preciseKp = formatDetailedKp(parseFloat(data.kp), parseFloat(data.solarWindSpeed));
     const flux = Number(data.xrayFlux);
+    const flareScore = getFlareScore(flux);
 
     evaluateSoundTriggers(preciseKp, flux);
 
     const nowStr = new Date().toUTCString().slice(17, 25);
-    telemetryHistory.push({ time: nowStr, kp: preciseKp, flux: flux });
+    telemetryHistory.push({ time: nowStr, kp: preciseKp, flux: flux, flareScore: flareScore });
     if (telemetryHistory.length > 360) telemetryHistory.shift();
 
     const kpEl = document.getElementById('current-kp');
@@ -375,7 +377,7 @@ function initChart() {
     });
 }
 
-// Render Chart dynamically
+// Render Chart dynamically using Flare Level Scale for solar flares
 function updateChartDisplay() {
     if (!weatherChart) return;
 
@@ -385,15 +387,16 @@ function updateChartDisplay() {
     if (currentTimeRange === '30m') {
         if (telemetryHistory.length === 0) return;
         labels = telemetryHistory.map(item => item.time);
-        dataPoints = telemetryHistory.map(item => currentChartType === 'kp' ? item.kp : item.flux);
+        dataPoints = telemetryHistory.map(item => currentChartType === 'kp' ? item.kp : item.flareScore);
     } else {
         labels = ['-24h', '-20h', '-16h', '-12h', '-8h', '-4h', 'Now'];
-        const latestItem = telemetryHistory.length > 0 ? telemetryHistory[telemetryHistory.length - 1] : { kp: 2.33, flux: 1.5e-7 };
+        const latestItem = telemetryHistory.length > 0 ? telemetryHistory[telemetryHistory.length - 1] : { kp: 2.33, flareScore: 3.50 };
         
         if (currentChartType === 'kp') {
             dataPoints = [2.00, 2.33, 2.67, 3.00, 2.33, 2.00, latestItem.kp];
         } else {
-            dataPoints = [1.5e-7, 2.1e-7, 4.3e-7, 1.1e-6, 5.0e-7, 2.0e-7, latestItem.flux];
+            // Simulated 24-hour flare level history on the 1-6 scale (e.g. 3.x = C-class, 4.x = M-class)
+            dataPoints = [3.10, 3.25, 3.80, 4.15, 3.50, 3.20, latestItem.flareScore];
         }
     }
 
@@ -404,14 +407,14 @@ function updateChartDisplay() {
         weatherChart.data.datasets[0].label = 'Kp Index Trend';
         weatherChart.data.datasets[0].borderColor = '#3b82f6';
         weatherChart.data.datasets[0].backgroundColor = 'rgba(59, 130, 246, 0.1)';
-        weatherChart.options.scales.y.max = 9;
         weatherChart.options.scales.y.min = 0;
+        weatherChart.options.scales.y.max = 9;
     } else {
-        weatherChart.data.datasets[0].label = 'X-Ray Flux (W/m²)';
+        weatherChart.data.datasets[0].label = 'Solar Flare Level (Class Scale)';
         weatherChart.data.datasets[0].borderColor = '#10b981';
         weatherChart.data.datasets[0].backgroundColor = 'rgba(16, 185, 129, 0.1)';
-        weatherChart.options.scales.y.max = 0.00001;
-        weatherChart.options.scales.y.min = 0;
+        weatherChart.options.scales.y.min = 1; // 1 = A-Class
+        weatherChart.options.scales.y.max = 6; // 6 = X-Class+
     }
 
     weatherChart.update();
