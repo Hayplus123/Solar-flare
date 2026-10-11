@@ -12,12 +12,36 @@ let weatherChart = null;
 let currentChartType = 'kp';      // 'kp' or 'flare'
 let currentTimeRange = '30m';     // '30m' or '24h'
 
-// Rolling history buffer storing Kp, raw flux, and calculated flare score
-let telemetryHistory = [];
+// --- DAILY PERSISTENCE & 00:00 UTC RESET LOGIC ---
+const todayUtcStr = new Date().toISOString().slice(0, 10); // YYYY-MM-DD in UTC
+const savedDate = localStorage.getItem('solar_date');
 
-// Load previous state from localStorage so it persists across page refreshes
-let previousKp = localStorage.getItem('solar_prev_kp') !== null ? parseFloat(localStorage.getItem('solar_prev_kp')) : null;
-let previousFlareScore = localStorage.getItem('solar_prev_flare') !== null ? parseFloat(localStorage.getItem('solar_prev_flare')) : null;
+let telemetryHistory = [];
+let previousKp = null;
+let previousFlareScore = null;
+
+if (savedDate === todayUtcStr) {
+    // Same day: Load saved history and states from localStorage so they persist across refreshes
+    try {
+        const savedHistory = localStorage.getItem('solar_history');
+        if (savedHistory) telemetryHistory = JSON.parse(savedHistory);
+
+        const savedKp = localStorage.getItem('solar_prev_kp');
+        if (savedKp !== null) previousKp = parseFloat(savedKp);
+
+        const savedFlare = localStorage.getItem('solar_prev_flare');
+        if (savedFlare !== null) previousFlareScore = parseFloat(savedFlare);
+    } catch (e) {
+        console.warn('Error loading saved storage:', e);
+    }
+} else {
+    // New day (Hit 00:00 UTC or first load of the day): Erase old data and set today's date
+    localStorage.removeItem('solar_history');
+    localStorage.removeItem('solar_prev_kp');
+    localStorage.removeItem('solar_prev_flare');
+    localStorage.setItem('solar_date', todayUtcStr);
+}
+// ------------------------------------------------
 
 // Initialize App safely
 document.addEventListener('DOMContentLoaded', () => {
@@ -225,13 +249,12 @@ function formatDetailedKp(rawKp, windSpeed) {
     return rawKp;
 }
 
-// Map flux into a clean numerical score (e.g. C3.76 -> 3.76, M1.42 -> 4.14, X2.0 -> 5.2)
 function getFlareScore(flux) {
-    if (flux >= 1e-4) return 5 + Math.min(9, flux / 1e-4); // X-class (5.0+)
-    if (flux >= 1e-5) return 4 + (flux / 1e-5);             // M-class (4.0 - 5.0)
-    if (flux >= 1e-6) return 3 + (flux / 1e-6);             // C-class (3.0 - 4.0)
-    if (flux >= 1e-7) return 2 + (flux / 1e-7);             // B-class (2.0 - 3.0)
-    return 1 + Math.max(0, flux / 1e-8);                    // A-class (1.0 - 2.0)
+    if (flux >= 1e-4) return 5 + Math.min(9, flux / 1e-4);
+    if (flux >= 1e-5) return 4 + (flux / 1e-5);
+    if (flux >= 1e-6) return 3 + (flux / 1e-6);
+    if (flux >= 1e-7) return 2 + (flux / 1e-7);
+    return 1 + Math.max(0, flux / 1e-8);
 }
 
 function calculateDetailedFlare(flux) {
@@ -288,9 +311,10 @@ function evaluateSoundTriggers(currentKp, currentFlux) {
         }
     }
 
-    // Save current state to localStorage so it persists across page refreshes
     previousKp = currentKp;
     previousFlareScore = currentFlareScore;
+
+    // Save states to localStorage
     localStorage.setItem('solar_prev_kp', previousKp);
     localStorage.setItem('solar_prev_flare', previousFlareScore);
 }
@@ -306,6 +330,10 @@ function updateUI(data) {
     const nowStr = new Date().toUTCString().slice(17, 25);
     telemetryHistory.push({ time: nowStr, kp: preciseKp, flux: flux, flareScore: flareScore });
     if (telemetryHistory.length > 360) telemetryHistory.shift();
+
+    // Save history buffer to localStorage so chart data persists across refreshes
+    localStorage.setItem('solar_history', JSON.stringify(telemetryHistory));
+    localStorage.setItem('solar_date', new Date().toISOString().slice(0, 10));
 
     const kpEl = document.getElementById('current-kp');
     if (kpEl) kpEl.textContent = preciseKp.toFixed(2);
@@ -377,7 +405,7 @@ function initChart() {
     });
 }
 
-// Render Chart dynamically using Flare Level Scale for solar flares
+// Render Chart dynamically
 function updateChartDisplay() {
     if (!weatherChart) return;
 
@@ -395,7 +423,6 @@ function updateChartDisplay() {
         if (currentChartType === 'kp') {
             dataPoints = [2.00, 2.33, 2.67, 3.00, 2.33, 2.00, latestItem.kp];
         } else {
-            // Simulated 24-hour flare level history on the 1-6 scale (e.g. 3.x = C-class, 4.x = M-class)
             dataPoints = [3.10, 3.25, 3.80, 4.15, 3.50, 3.20, latestItem.flareScore];
         }
     }
@@ -413,8 +440,8 @@ function updateChartDisplay() {
         weatherChart.data.datasets[0].label = 'Solar Flare Level (Class Scale)';
         weatherChart.data.datasets[0].borderColor = '#10b981';
         weatherChart.data.datasets[0].backgroundColor = 'rgba(16, 185, 129, 0.1)';
-        weatherChart.options.scales.y.min = 1; // 1 = A-Class
-        weatherChart.options.scales.y.max = 6; // 6 = X-Class+
+        weatherChart.options.scales.y.min = 1;
+        weatherChart.options.scales.y.max = 6;
     }
 
     weatherChart.update();
