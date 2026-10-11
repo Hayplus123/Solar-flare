@@ -13,7 +13,7 @@ let currentChartType = 'kp';      // 'kp' or 'flare'
 let currentTimeRange = '30m';     // '30m' or '24h'
 
 // --- DAILY PERSISTENCE & 00:00 UTC RESET LOGIC ---
-const todayUtcStr = new Date().toISOString().slice(0, 10); // YYYY-MM-DD in UTC
+const todayUtcStr = new Date().toISOString().slice(0, 10);
 const savedDate = localStorage.getItem('solar_date');
 
 let telemetryHistory = [];
@@ -21,7 +21,6 @@ let previousKp = null;
 let previousFlareScore = null;
 
 if (savedDate === todayUtcStr) {
-    // Same day: Load saved history and states from localStorage so they persist across refreshes
     try {
         const savedHistory = localStorage.getItem('solar_history');
         if (savedHistory) telemetryHistory = JSON.parse(savedHistory);
@@ -35,7 +34,6 @@ if (savedDate === todayUtcStr) {
         console.warn('Error loading saved storage:', e);
     }
 } else {
-    // New day (Hit 00:00 UTC or first load of the day): Erase old data and set today's date
     localStorage.removeItem('solar_history');
     localStorage.removeItem('solar_prev_kp');
     localStorage.removeItem('solar_prev_flare');
@@ -249,12 +247,13 @@ function formatDetailedKp(rawKp, windSpeed) {
     return rawKp;
 }
 
+// Normalized Flare Score (Clean ranges: A=0-1, B=1-2, C=2-3, M=3-4, X=4+)
 function getFlareScore(flux) {
-    if (flux >= 1e-4) return 5 + Math.min(9, flux / 1e-4);
-    if (flux >= 1e-5) return 4 + (flux / 1e-5);
-    if (flux >= 1e-6) return 3 + (flux / 1e-6);
-    if (flux >= 1e-7) return 2 + (flux / 1e-7);
-    return 1 + Math.max(0, flux / 1e-8);
+    if (flux >= 1e-4) return 4 + Math.min(5, (flux / 1e-4) / 10);
+    if (flux >= 1e-5) return 3 + Math.min(1, (flux / 1e-5) / 10);
+    if (flux >= 1e-6) return 2 + Math.min(1, (flux / 1e-6) / 10);
+    if (flux >= 1e-7) return 1 + Math.min(1, (flux / 1e-7) / 10);
+    return Math.min(1, (flux / 1e-8) / 10);
 }
 
 function calculateDetailedFlare(flux) {
@@ -314,7 +313,6 @@ function evaluateSoundTriggers(currentKp, currentFlux) {
     previousKp = currentKp;
     previousFlareScore = currentFlareScore;
 
-    // Save states to localStorage
     localStorage.setItem('solar_prev_kp', previousKp);
     localStorage.setItem('solar_prev_flare', previousFlareScore);
 }
@@ -331,7 +329,6 @@ function updateUI(data) {
     telemetryHistory.push({ time: nowStr, kp: preciseKp, flux: flux, flareScore: flareScore });
     if (telemetryHistory.length > 360) telemetryHistory.shift();
 
-    // Save history buffer to localStorage so chart data persists across refreshes
     localStorage.setItem('solar_history', JSON.stringify(telemetryHistory));
     localStorage.setItem('solar_date', new Date().toISOString().slice(0, 10));
 
@@ -405,7 +402,7 @@ function initChart() {
     });
 }
 
-// Render Chart dynamically
+// Render Chart dynamically with Auto-Scaling (Zooms out/adjusts based on active data)
 function updateChartDisplay() {
     if (!weatherChart) return;
 
@@ -418,12 +415,12 @@ function updateChartDisplay() {
         dataPoints = telemetryHistory.map(item => currentChartType === 'kp' ? item.kp : item.flareScore);
     } else {
         labels = ['-24h', '-20h', '-16h', '-12h', '-8h', '-4h', 'Now'];
-        const latestItem = telemetryHistory.length > 0 ? telemetryHistory[telemetryHistory.length - 1] : { kp: 2.33, flareScore: 3.50 };
+        const latestItem = telemetryHistory.length > 0 ? telemetryHistory[telemetryHistory.length - 1] : { kp: 2.33, flareScore: 1.50 };
         
         if (currentChartType === 'kp') {
             dataPoints = [2.00, 2.33, 2.67, 3.00, 2.33, 2.00, latestItem.kp];
         } else {
-            dataPoints = [3.10, 3.25, 3.80, 4.15, 3.50, 3.20, latestItem.flareScore];
+            dataPoints = [1.20, 1.45, 2.10, 2.80, 1.60, 1.30, latestItem.flareScore];
         }
     }
 
@@ -435,13 +432,16 @@ function updateChartDisplay() {
         weatherChart.data.datasets[0].borderColor = '#3b82f6';
         weatherChart.data.datasets[0].backgroundColor = 'rgba(59, 130, 246, 0.1)';
         weatherChart.options.scales.y.min = 0;
-        weatherChart.options.scales.y.max = 9;
+        weatherChart.options.scales.y.max = 9; // Kp is strictly 0-9
     } else {
         weatherChart.data.datasets[0].label = 'Solar Flare Level (Class Scale)';
         weatherChart.data.datasets[0].borderColor = '#10b981';
         weatherChart.data.datasets[0].backgroundColor = 'rgba(16, 185, 129, 0.1)';
-        weatherChart.options.scales.y.min = 1;
-        weatherChart.options.scales.y.max = 6;
+        
+        // Dynamic Auto-Scaling: Automatically zooms out/adjusts Y-axis to fit current flare levels!
+        weatherChart.options.scales.y.min = 0;
+        const maxFlare = Math.max(...dataPoints, 2.0);
+        weatherChart.options.scales.y.max = Math.min(6, Math.ceil(maxFlare + 1)); 
     }
 
     weatherChart.update();
