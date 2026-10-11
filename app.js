@@ -49,6 +49,10 @@ document.addEventListener('DOMContentLoaded', () => {
     initClock();
     initChart();
     initEmailIntegration();
+
+    // Render baseline probabilities instantly so it never shows --% on load
+    updateUI({ kp: 2.0, xrayFlux: 1e-7, solarWindSpeed: 410, solarWindDensity: 5.2 });
+
     fetchData();
 
     // Auto-refresh data every 5 seconds
