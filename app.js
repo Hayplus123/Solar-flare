@@ -15,9 +15,9 @@ let currentTimeRange = '30m';     // '30m' or '24h'
 // Rolling history buffer (holds 360 points = 30 minutes of data at 5-second intervals)
 let telemetryHistory = [];
 
-// Tracking previous state for smart sound triggers
-let previousKp = null;
-let previousFlareScore = null;
+// Load previous state from localStorage so it persists across page refreshes
+let previousKp = localStorage.getItem('solar_prev_kp') !== null ? parseFloat(localStorage.getItem('solar_prev_kp')) : null;
+let previousFlareScore = localStorage.getItem('solar_prev_flare') !== null ? parseFloat(localStorage.getItem('solar_prev_flare')) : null;
 
 // Initialize App
 document.addEventListener('DOMContentLoaded', () => {
@@ -272,8 +272,12 @@ function evaluateSoundTriggers(currentKp, currentFlux) {
             else if (isBeepLevel) playAudioAlert('beep');
         }
     }
+
+    // Update state and save to localStorage so it survives page refreshes
     previousKp = currentKp;
     previousFlareScore = currentFlareScore;
+    localStorage.setItem('solar_prev_kp', previousKp);
+    localStorage.setItem('solar_prev_flare', previousFlareScore);
 }
 
 // Update UI Elements and record into history every 5 seconds
@@ -363,27 +367,3 @@ function updateChartDisplay() {
         
         if (currentChartType === 'kp') {
             dataPoints = [2.00, 2.33, 2.67, 3.00, 2.33, 2.00, latestItem.kp];
-        } else {
-            dataPoints = [1.5e-7, 2.1e-7, 4.3e-7, 1.1e-6, 5.0e-7, 2.0e-7, latestItem.flux];
-        }
-    }
-
-    weatherChart.data.labels = labels;
-    weatherChart.data.datasets[0].data = dataPoints;
-
-    if (currentChartType === 'kp') {
-        weatherChart.data.datasets[0].label = 'Kp Index Trend';
-        weatherChart.data.datasets[0].borderColor = '#3b82f6';
-        weatherChart.data.datasets[0].backgroundColor = 'rgba(59, 130, 246, 0.1)';
-        weatherChart.options.scales.y.max = 9;
-        weatherChart.options.scales.y.min = 0;
-    } else {
-        weatherChart.data.datasets[0].label = 'X-Ray Flux (W/m²)';
-        weatherChart.data.datasets[0].borderColor = '#10b981';
-        weatherChart.data.datasets[0].backgroundColor = 'rgba(16, 185, 129, 0.1)';
-        weatherChart.options.scales.y.max = 0.00001;
-        weatherChart.options.scales.y.min = 0;
-    }
-
-    weatherChart.update();
-}
