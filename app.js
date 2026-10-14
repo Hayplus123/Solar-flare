@@ -56,14 +56,14 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initial manual fetch on load
     fetchData(false);
 
-    // Independent 5-second background telemetry ticker (logs to history buffer)
+    // Independent 5-second background telemetry ticker
     setInterval(() => {
         fetchData(true);
     }, 5000);
 
     // Event Listeners with safety checks
     const refreshBtn = document.getElementById('refresh-btn');
-    if (refreshBtn) refreshBtn.addEventListener('click', () => fetchData(false)); // Manual click does NOT log to history
+    if (refreshBtn) refreshBtn.addEventListener('click', () => fetchData(false));
 
     const toggleModeBtn = document.getElementById('toggle-mode-btn');
     if (toggleModeBtn) toggleModeBtn.addEventListener('click', toggleSimulationMode);
@@ -162,7 +162,24 @@ async function sendTestAlert() {
     }
 }
 
-// Fetch Live Data from NOAA (isTick = true means record into history buffer)
+// Automated Webhook Email Dispatcher
+async function sendWebhookAlert(kpVal, flareVal) {
+    const url = localStorage.getItem('solar_gas_url') || GAS_ALERT_URL;
+    if (!url) return;
+
+    try {
+        await fetch(url, {
+            method: 'POST',
+            mode: 'no-cors',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ kp: kpVal.toFixed(2), flare: flareVal })
+        });
+    } catch (e) {
+        console.warn('Webhook email notification failed:', e);
+    }
+}
+
+// Fetch Live Data from NOAA
 async function fetchData(isTick = false) {
     if (isSimulationMode) {
         loadSimulationData(isTick);
@@ -325,20 +342,30 @@ function playAudioAlert(type) {
     }
 }
 
-// Smart Sound Trigger Watcher
+// Notification & Sound Watcher (Restricted to Kp >= 4.0 OR Flare M-Class and above)
 function evaluateSoundTriggers(currentKp, currentFlux) {
     const currentFlareScore = getFlareScore(currentFlux);
+    const detailedFlare = calculateDetailedFlare(currentFlux);
+
+    // User Rule: Only trigger notifications when solar flare is M or above (flux >= 1e-5) OR Kp is 4 and above
+    const meetsThreshold = currentKp >= 4.0 || currentFlux >= 1e-5;
 
     if (previousKp !== null && previousFlareScore !== null) {
         const isKpHigher = currentKp > previousKp;
         const isFlareHigher = currentFlareScore > previousFlareScore;
 
-        if (isKpHigher || isFlareHigher) {
+        if ((isKpHigher || isFlareHigher) && meetsThreshold) {
             const isAlarmLevel = currentKp > 6.0 || currentFlux >= 1e-4;
             const isBeepLevel = (currentKp >= 4.0 && currentKp <= 6.0) || (currentFlux >= 1e-5 && currentFlux < 1e-4);
 
-            if (isAlarmLevel) playAudioAlert('alarm');
-            else if (isBeepLevel) playAudioAlert('beep');
+            if (isAlarmLevel) {
+                playAudioAlert('alarm');
+            } else if (isBeepLevel) {
+                playAudioAlert('beep');
+            }
+
+            // Automatically dispatch email webhook notification
+            sendWebhookAlert(currentKp, detailedFlare);
         }
     }
 
@@ -349,7 +376,7 @@ function evaluateSoundTriggers(currentKp, currentFlux) {
     localStorage.setItem('solar_prev_flare', previousFlareScore);
 }
 
-// Update UI Elements safely (isTick = true records data point into timeline)
+// Update UI Elements safely
 function updateUI(data, isTick = true) {
     const preciseKp = formatDetailedKp(parseFloat(data.kp), parseFloat(data.solarWindSpeed));
     const flux = Number(data.xrayFlux);
