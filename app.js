@@ -51,16 +51,19 @@ document.addEventListener('DOMContentLoaded', () => {
     initEmailIntegration();
 
     // Render baseline probabilities instantly on load
-    updateUI({ kp: 2.0, xrayFlux: 1e-7, solarWindSpeed: 410, solarWindDensity: 5.2 });
+    updateUI({ kp: 2.0, xrayFlux: 1e-7, solarWindSpeed: 410, solarWindDensity: 5.2 }, false);
 
-    fetchData();
+    // Initial manual fetch on load
+    fetchData(false);
 
-    // Auto-refresh data every 5 seconds
-    setInterval(fetchData, 5000);
+    // Independent 5-second background telemetry ticker (logs to history buffer)
+    setInterval(() => {
+        fetchData(true);
+    }, 5000);
 
     // Event Listeners with safety checks
     const refreshBtn = document.getElementById('refresh-btn');
-    if (refreshBtn) refreshBtn.addEventListener('click', fetchData);
+    if (refreshBtn) refreshBtn.addEventListener('click', () => fetchData(false)); // Manual click does NOT log to history
 
     const toggleModeBtn = document.getElementById('toggle-mode-btn');
     if (toggleModeBtn) toggleModeBtn.addEventListener('click', toggleSimulationMode);
@@ -159,10 +162,10 @@ async function sendTestAlert() {
     }
 }
 
-// Fetch Live Data from NOAA
-async function fetchData() {
+// Fetch Live Data from NOAA (isTick = true means record into history buffer)
+async function fetchData(isTick = false) {
     if (isSimulationMode) {
-        loadSimulationData();
+        loadSimulationData(isTick);
         return;
     }
 
@@ -200,13 +203,13 @@ async function fetchData() {
             xrayFlux: xrayFlux,
             solarWindSpeed: windSpeed,
             solarWindDensity: windDensity
-        });
+        }, isTick);
 
         setConnectionStatus('live', 'NOAA API: Live');
     } catch (error) {
         console.warn('Network error. Switching to simulation.', error);
         setConnectionStatus('sim', 'API Offline (Simulation Active)');
-        loadSimulationData();
+        loadSimulationData(isTick);
     }
 }
 
@@ -217,10 +220,10 @@ function toggleSimulationMode() {
     if (isSimulationMode) {
         if (btn) btn.innerHTML = '<i class="fa-solid fa-cloud"></i> Live API Mode';
         setConnectionStatus('sim', 'Simulation Mode');
-        loadSimulationData();
+        loadSimulationData(false);
     } else {
         if (btn) btn.innerHTML = '<i class="fa-solid fa-sliders"></i> Simulation Mode';
-        fetchData();
+        fetchData(false);
     }
 }
 
@@ -232,7 +235,7 @@ function setConnectionStatus(status, text) {
 }
 
 // Load Simulated Telemetry
-function loadSimulationData() {
+function loadSimulationData(isTick = false) {
     const randomKp = Math.floor(Math.random() * 5) + 1;
     const fractionalChoice = [0.00, 0.33, 0.67][Math.floor(Math.random() * 3)];
     const simulatedData = {
@@ -241,7 +244,7 @@ function loadSimulationData() {
         solarWindSpeed: (350 + Math.random() * 150).toFixed(1),
         solarWindDensity: (3 + Math.random() * 8).toFixed(1)
     };
-    updateUI(simulatedData);
+    updateUI(simulatedData, isTick);
 }
 
 // Convert raw Kp into scientific fractional thirds
@@ -346,21 +349,23 @@ function evaluateSoundTriggers(currentKp, currentFlux) {
     localStorage.setItem('solar_prev_flare', previousFlareScore);
 }
 
-// Update UI Elements safely
-function updateUI(data) {
+// Update UI Elements safely (isTick = true records data point into timeline)
+function updateUI(data, isTick = true) {
     const preciseKp = formatDetailedKp(parseFloat(data.kp), parseFloat(data.solarWindSpeed));
     const flux = Number(data.xrayFlux);
     const flareScore = getFlareScore(flux);
     const flareStr = calculateDetailedFlare(flux);
 
-    evaluateSoundTriggers(preciseKp, flux);
+    if (isTick) {
+        evaluateSoundTriggers(preciseKp, flux);
 
-    const nowStr = new Date().toUTCString().slice(17, 25);
-    telemetryHistory.push({ time: nowStr, kp: preciseKp, flux: flux, flareScore: flareScore, flareStr: flareStr });
-    if (telemetryHistory.length > 360) telemetryHistory.shift();
+        const nowStr = new Date().toUTCString().slice(17, 25);
+        telemetryHistory.push({ time: nowStr, kp: preciseKp, flux: flux, flareScore: flareScore, flareStr: flareStr });
+        if (telemetryHistory.length > 360) telemetryHistory.shift();
 
-    localStorage.setItem('solar_history', JSON.stringify(telemetryHistory));
-    localStorage.setItem('solar_date', new Date().toISOString().slice(0, 10));
+        localStorage.setItem('solar_history', JSON.stringify(telemetryHistory));
+        localStorage.setItem('solar_date', new Date().toISOString().slice(0, 10));
+    }
 
     const probs = calculateProbabilities(data.solarWindSpeed, data.solarWindDensity, flux, preciseKp);
 
