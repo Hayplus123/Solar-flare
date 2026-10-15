@@ -1,11 +1,11 @@
-// NOAA Live & Forecast Endpoints
+// NOAA Live Endpoints
 const ENDPOINTS = {
     kp: 'https://services.swpc.noaa.gov/json/planetary_k_index_1m.json',
     xray: 'https://services.swpc.noaa.gov/json/goes/primary/xrays-6-hour.json',
     solarWind: 'https://services.swpc.noaa.gov/products/solar-wind/plasma-1-day.json',
-    imf: 'https://services.swpc.noaa.gov/products/solar-wind/mag-1-day.json',                // Live IMF Bz Vector
-    noaa3DayKp: 'https://services.swpc.noaa.gov/products/noaa-planetary-k-index-forecast.json', // Official 3-day Kp forecast
-    noaaFlareProb: 'https://services.swpc.noaa.gov/json/solar_probabilities.json'             // Official Solar Disk Flare Probabilities
+    imf: 'https://services.swpc.noaa.gov/products/solar-wind/mag-1-day.json',
+    noaa3DayKp: 'https://services.swpc.noaa.gov/products/noaa-planetary-k-index-forecast.json',
+    noaaFlareProb: 'https://services.swpc.noaa.gov/json/solar_probabilities.json'
 };
 
 const GAS_ALERT_URL = 'https://script.google.com/macros/s/AKfycby2h9nSrgR7yNdrn3JdHLKcejY-gp2KK2eaxM-dWPeSJWFSRCrJOAK_zMwd1WAVCB8/exec';
@@ -177,8 +177,14 @@ async function sendTestAlert() {
     }
 }
 
-// Automated Webhook Dispatcher
+// Automated Webhook Dispatcher with Absolute Firewall
 async function sendWebhookAlert(kpVal, flareVal) {
+    // Absolute Firewall: Reject if Kp < 4.0 and flare is not M or X class
+    const isMOrAbove = flareVal.startsWith('M') || flareVal.startsWith('X');
+    if (kpVal < 4.0 && !isMOrAbove) {
+        return; // Silently abort transmission
+    }
+
     const url = localStorage.getItem('solar_gas_url') || GAS_ALERT_URL;
     if (!url) return;
 
@@ -196,15 +202,13 @@ async function sendWebhookAlert(kpVal, flareVal) {
 
 // Fetch Solar Observation & Forecasting APIs
 async function fetchSolarObservationData() {
-    // 1. Fetch Solar Wind Magnetic Field Bz Vector (DSCOVR Satellite)
     try {
         const imfRes = await fetch(ENDPOINTS.imf);
         const imfData = await imfRes.json();
         const latestImf = imfData[imfData.length - 1];
-        latestObservationalData.bz = parseFloat(latestImf[3] || 0); // Index 3 is Bz in nT
+        latestObservationalData.bz = parseFloat(latestImf[3] || 0);
     } catch (e) { console.warn('IMF Bz fetch failed', e); }
 
-    // 2. Fetch NOAA Disk Observation Flare Probabilities
     try {
         const probRes = await fetch(ENDPOINTS.noaaFlareProb);
         const probData = await probRes.json();
@@ -215,12 +219,10 @@ async function fetchSolarObservationData() {
         }
     } catch (e) { console.warn('NOAA Flare Probability fetch failed', e); }
 
-    // 3. Fetch NOAA 3-Day Planetary K-index Model Predictions
     try {
         const kpModelRes = await fetch(ENDPOINTS.noaa3DayKp);
         const kpModelData = await kpModelRes.json();
         if (kpModelData && kpModelData.length > 1) {
-            // Find max predicted Kp in the upcoming 24h prediction window
             const upcomingKps = kpModelData.slice(1, 9).map(row => parseFloat(row[1] || 0));
             latestObservationalData.noaaMaxForecastKp = Math.max(...upcomingKps);
         }
@@ -237,7 +239,6 @@ async function fetchData(isTick = false) {
     try {
         setConnectionStatus('loading', 'Updating NOAA Telemetry & Solar APIs...');
 
-        // Fetch forward-looking observational APIs concurrently
         await fetchSolarObservationData();
 
         let kpVal = 2.0;
@@ -344,16 +345,14 @@ function calculateDetailedFlare(flux) {
     return `A${(flux / 1e-8).toFixed(2)}`;
 }
 
-// ADVANCED SOLAR OBSERVATIONAL PROBABILITY ENGINE
+// Advanced Observational Probability Engine
 function calculateProbabilities(windSpeed, windDensity, flux, preciseKp) {
-    // 1. Kp Storm Probability (Incorporates IMF Bz coupling vector & NOAA 3-day forecast)
     const bz = latestObservationalData.bz;
-    let bzRiskFactor = bz < -5 ? Math.abs(bz) * 4 : 0; // Southward magnetic coupling sharply escalates storm risk
+    let bzRiskFactor = bz < -5 ? Math.abs(bz) * 4 : 0;
     let kpSpeedFactor = Math.max(0, (windSpeed - 400) / 250);
     
     let baseKpProb = ((preciseKp / 5.0) * 35) + (kpSpeedFactor * 25) + bzRiskFactor + (windDensity > 8 ? 15 : 5);
     
-    // Blend with official NOAA 3-day model prediction if available
     if (latestObservationalData.noaaMaxForecastKp !== null) {
         let modelPredictionProb = (latestObservationalData.noaaMaxForecastKp / 5.0) * 100;
         baseKpProb = (baseKpProb * 0.6) + (modelPredictionProb * 0.4);
@@ -363,13 +362,11 @@ function calculateProbabilities(windSpeed, windDensity, flux, preciseKp) {
     let kpEstPeak = Math.min(9.0, preciseKp + (bz < -8 ? 2.0 : (windSpeed > 500 ? 1.2 : 0.4))).toFixed(2);
     let kpEta = bz < -6 ? "Imminent (15–45 min)" : (windSpeed > 450 ? "3–6 hours" : "Quiet Outlook (24h)");
 
-    // 2. Solar Flare Probability (Blended with NOAA active sunspot region disk observations)
     let flareRatio = flux / 1e-5;
     let calculatedFlareProb = Math.min(99, Math.max(5, Math.round(flareRatio * 40 + (flux > 1e-6 ? 20 : 5))));
     
     let finalFlareProb = calculatedFlareProb;
     if (latestObservationalData.noaaMClassProb !== null) {
-        // High-weight integration of NOAA satellite solar active region observations
         finalFlareProb = Math.round((calculatedFlareProb * 0.4) + (latestObservationalData.noaaMClassProb * 0.6));
     }
 
