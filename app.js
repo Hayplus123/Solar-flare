@@ -1,4 +1,4 @@
-// NOAA Live Endpoints
+// NOAA Live & Forecast Endpoints
 const ENDPOINTS = {
     kp: 'https://services.swpc.noaa.gov/json/planetary_k_index_1m.json',
     xray: 'https://services.swpc.noaa.gov/json/goes/primary/xrays-6-hour.json',
@@ -179,10 +179,9 @@ async function sendTestAlert() {
 
 // Automated Webhook Dispatcher with Absolute Firewall
 async function sendWebhookAlert(kpVal, flareVal) {
-    // Absolute Firewall: Reject if Kp < 4.0 and flare is not M or X class
     const isMOrAbove = flareVal.startsWith('M') || flareVal.startsWith('X');
     if (kpVal < 4.0 && !isMOrAbove) {
-        return; // Silently abort transmission
+        return; // Silently abort transmission for quiet conditions
     }
 
     const url = localStorage.getItem('solar_gas_url') || GAS_ALERT_URL;
@@ -263,8 +262,9 @@ async function fetchData(isTick = false) {
             const windRes = await fetch(ENDPOINTS.solarWind);
             const windData = await windRes.json();
             const latest = windData[windData.length - 1];
-            windSpeed = parseFloat(latest[1] || 410);
-            windDensity = parseFloat(latest[2] || 5.2);
+            // FIXED INDICES: Index 1 = Density, Index 2 = Speed
+            windDensity = parseFloat(latest[1] || 5.2);
+            windSpeed = parseFloat(latest[2] || 410);
         } catch (e) { console.warn('Wind fetch failed', e); }
 
         updateUI({
@@ -583,7 +583,7 @@ function updateChartDisplay() {
         dataPoints = telemetryHistory.map(item => currentChartType === 'kp' ? item.kp : item.flareScore);
     } else {
         labels = ['-24h', '-20h', '-16h', '-12h', '-8h', '-4h', 'Now'];
-        const latestItem = telemetryHistory.length > 0 ? telemetryHistory[telemetryHistory.length - 1] : { kp: 2.33, flareScore: 1.50 };
+        const latestItem = telemetryHistory.length > 0 ? telemetryHistory[telenergyHistory.length - 1] : { kp: 2.33, flareScore: 1.50 };
         
         if (currentChartType === 'kp') {
             dataPoints = [2.00, 2.33, 2.67, 3.00, 2.33, 2.00, latestItem.kp];
