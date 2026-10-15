@@ -128,6 +128,7 @@ function saveGasUrl() {
     }
 }
 
+// Hardened Test Alert: Blocked unless Kp >= 4.0 or M/X Flare
 async function sendTestAlert() {
     const url = localStorage.getItem('solar_gas_url') || GAS_ALERT_URL;
     if (!url) {
@@ -137,11 +138,16 @@ async function sendTestAlert() {
 
     const kpEl = document.getElementById('current-kp');
     const flareEl = document.getElementById('current-flare');
-    const testData = {
-        kp: kpEl ? kpEl.textContent : '2.00',
-        flare: flareEl ? flareEl.textContent : 'C1.00'
-    };
+    const kpVal = kpEl ? parseFloat(kpEl.textContent) : 2.0;
+    const flareText = flareEl ? flareEl.textContent : 'C1.00';
+    const isMOrAbove = flareText.startsWith('M') || flareText.startsWith('X');
 
+    if (kpVal < 4.0 && !isMOrAbove) {
+        alert(`Test Alert Blocked: Current Kp (${kpVal}) and Solar Flare (${flareText}) are below threshold (Kp ≥ 4.0 or M/X-Class required).`);
+        return;
+    }
+
+    const testData = { kp: kpVal.toFixed(2), flare: flareText };
     const btn = document.getElementById('test-alert-btn');
     if (btn) btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Sending...';
 
@@ -153,7 +159,7 @@ async function sendTestAlert() {
             body: JSON.stringify(testData)
         });
         
-        alert('Test alert triggered! Check your Gmail inbox shortly.');
+        alert('Test alert triggered successfully!');
     } catch (error) {
         console.error('Error sending alert:', error);
         alert('Failed to send alert.');
@@ -342,12 +348,12 @@ function playAudioAlert(type) {
     }
 }
 
-// Notification & Sound Watcher (Restricted to Kp >= 4.0 OR Flare M-Class and above)
+// Strict Threshold Watcher
 function evaluateSoundTriggers(currentKp, currentFlux) {
     const currentFlareScore = getFlareScore(currentFlux);
     const detailedFlare = calculateDetailedFlare(currentFlux);
 
-    // User Rule: Only trigger notifications when solar flare is M or above (flux >= 1e-5) OR Kp is 4 and above
+    // Absolute Rule: Must meet Kp >= 4.0 OR Flare M-Class and above (flux >= 1e-5)
     const meetsThreshold = currentKp >= 4.0 || currentFlux >= 1e-5;
 
     if (previousKp !== null && previousFlareScore !== null) {
@@ -364,7 +370,7 @@ function evaluateSoundTriggers(currentKp, currentFlux) {
                 playAudioAlert('beep');
             }
 
-            // Automatically dispatch email webhook notification
+            // Dispatch email webhook only if threshold is met
             sendWebhookAlert(currentKp, detailedFlare);
         }
     }
