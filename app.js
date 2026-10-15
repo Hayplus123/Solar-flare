@@ -1,8 +1,11 @@
-// NOAA Live Endpoints
+// NOAA Live & Forecast Endpoints
 const ENDPOINTS = {
     kp: 'https://services.swpc.noaa.gov/json/planetary_k_index_1m.json',
     xray: 'https://services.swpc.noaa.gov/json/goes/primary/xrays-6-hour.json',
-    solarWind: 'https://services.swpc.noaa.gov/products/solar-wind/plasma-1-day.json'
+    solarWind: 'https://services.swpc.noaa.gov/products/solar-wind/plasma-1-day.json',
+    imf: 'https://services.swpc.noaa.gov/products/solar-wind/mag-1-day.json',                // Live IMF Bz Vector
+    noaa3DayKp: 'https://services.swpc.noaa.gov/products/noaa-planetary-k-index-forecast.json', // Official 3-day Kp forecast
+    noaaFlareProb: 'https://services.swpc.noaa.gov/json/solar_probabilities.json'             // Official Solar Disk Flare Probabilities
 };
 
 const GAS_ALERT_URL = 'https://script.google.com/macros/s/AKfycby2h9nSrgR7yNdrn3JdHLKcejY-gp2KK2eaxM-dWPeSJWFSRCrJOAK_zMwd1WAVCB8/exec';
@@ -14,6 +17,14 @@ let currentTimeRange = '30m';     // '30m' or '24h'
 
 // Rolling history buffer (holds 360 points = 30 minutes of data at 5-second intervals)
 let telemetryHistory = [];
+
+// Storage for satellite solar observations
+let latestObservationalData = {
+    bz: 0,
+    noaaMClassProb: null,
+    noaaXClassProb: null,
+    noaaMaxForecastKp: null
+};
 
 // --- DAILY PERSISTENCE & 00:00 UTC RESET LOGIC ---
 const todayUtcStr = new Date().toISOString().slice(0, 10);
@@ -36,7 +47,6 @@ if (savedDate === todayUtcStr) {
         console.warn('Error loading saved storage:', e);
     }
 } else {
-    // New UTC day (00:00 UTC reset): clear old history and states
     localStorage.removeItem('solar_history');
     localStorage.removeItem('solar_prev_kp');
     localStorage.removeItem('solar_prev_flare');
@@ -50,10 +60,10 @@ document.addEventListener('DOMContentLoaded', () => {
     initChart();
     initEmailIntegration();
 
-    // Render baseline probabilities instantly on load
+    // Baseline render
     updateUI({ kp: 2.0, xrayFlux: 1e-7, solarWindSpeed: 410, solarWindDensity: 5.2 }, false);
 
-    // Initial manual fetch on load
+    // Initial manual fetch
     fetchData(false);
 
     // Independent 5-second background telemetry ticker
@@ -61,7 +71,7 @@ document.addEventListener('DOMContentLoaded', () => {
         fetchData(true);
     }, 5000);
 
-    // Event Listeners with safety checks
+    // Event Listeners
     const refreshBtn = document.getElementById('refresh-btn');
     if (refreshBtn) refreshBtn.addEventListener('click', () => fetchData(false));
 
@@ -74,7 +84,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const testAlertBtn = document.getElementById('test-alert-btn');
     if (testAlertBtn) testAlertBtn.addEventListener('click', sendTestAlert);
 
-    // Chart metric tabs (Kp vs Solar Flare)
+    // Chart metric tabs
     document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -84,7 +94,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // Timeline range tabs (30m vs 24h)
+    // Timeline range tabs
     document.querySelectorAll('.time-tab-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             document.querySelectorAll('.time-tab-btn').forEach(b => b.classList.remove('active'));
@@ -106,7 +116,7 @@ function initClock() {
     }, 1000);
 }
 
-// Initialize Email Alert Integration
+// Email Integration Setup
 function initEmailIntegration() {
     let savedUrl = localStorage.getItem('solar_gas_url');
     if (!savedUrl) {
@@ -128,7 +138,7 @@ function saveGasUrl() {
     }
 }
 
-// Hardened Test Alert: Blocked unless Kp >= 4.0 or M/X Flare
+// Hardened Test Alert Trigger
 async function sendTestAlert() {
     const url = localStorage.getItem('solar_gas_url') || GAS_ALERT_URL;
     if (!url) {
@@ -158,7 +168,6 @@ async function sendTestAlert() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(testData)
         });
-        
         alert('Test alert triggered successfully!');
     } catch (error) {
         console.error('Error sending alert:', error);
@@ -168,7 +177,7 @@ async function sendTestAlert() {
     }
 }
 
-// Automated Webhook Email Dispatcher
+// Automated Webhook Dispatcher
 async function sendWebhookAlert(kpVal, flareVal) {
     const url = localStorage.getItem('solar_gas_url') || GAS_ALERT_URL;
     if (!url) return;
@@ -185,7 +194,40 @@ async function sendWebhookAlert(kpVal, flareVal) {
     }
 }
 
-// Fetch Live Data from NOAA
+// Fetch Solar Observation & Forecasting APIs
+async function fetchSolarObservationData() {
+    // 1. Fetch Solar Wind Magnetic Field Bz Vector (DSCOVR Satellite)
+    try {
+        const imfRes = await fetch(ENDPOINTS.imf);
+        const imfData = await imfRes.json();
+        const latestImf = imfData[imfData.length - 1];
+        latestObservationalData.bz = parseFloat(latestImf[3] || 0); // Index 3 is Bz in nT
+    } catch (e) { console.warn('IMF Bz fetch failed', e); }
+
+    // 2. Fetch NOAA Disk Observation Flare Probabilities
+    try {
+        const probRes = await fetch(ENDPOINTS.noaaFlareProb);
+        const probData = await probRes.json();
+        if (probData && probData.length > 0) {
+            const todayProb = probData[0];
+            latestObservationalData.noaaMClassProb = parseInt(todayProb.m_class_prob || todayProb.c_class_prob || 15);
+            latestObservationalData.noaaXClassProb = parseInt(todayProb.x_class_prob || 1);
+        }
+    } catch (e) { console.warn('NOAA Flare Probability fetch failed', e); }
+
+    // 3. Fetch NOAA 3-Day Planetary K-index Model Predictions
+    try {
+        const kpModelRes = await fetch(ENDPOINTS.noaa3DayKp);
+        const kpModelData = await kpModelRes.json();
+        if (kpModelData && kpModelData.length > 1) {
+            // Find max predicted Kp in the upcoming 24h prediction window
+            const upcomingKps = kpModelData.slice(1, 9).map(row => parseFloat(row[1] || 0));
+            latestObservationalData.noaaMaxForecastKp = Math.max(...upcomingKps);
+        }
+    } catch (e) { console.warn('NOAA 3-Day Kp Model fetch failed', e); }
+}
+
+// Main Data Ingestion
 async function fetchData(isTick = false) {
     if (isSimulationMode) {
         loadSimulationData(isTick);
@@ -193,7 +235,10 @@ async function fetchData(isTick = false) {
     }
 
     try {
-        setConnectionStatus('loading', 'Updating NOAA Data...');
+        setConnectionStatus('loading', 'Updating NOAA Telemetry & Solar APIs...');
+
+        // Fetch forward-looking observational APIs concurrently
+        await fetchSolarObservationData();
 
         let kpVal = 2.0;
         try {
@@ -228,7 +273,7 @@ async function fetchData(isTick = false) {
             solarWindDensity: windDensity
         }, isTick);
 
-        setConnectionStatus('live', 'NOAA API: Live');
+        setConnectionStatus('live', 'NOAA Satellite API: Live');
     } catch (error) {
         console.warn('Network error. Switching to simulation.', error);
         setConnectionStatus('sim', 'API Offline (Simulation Active)');
@@ -236,7 +281,7 @@ async function fetchData(isTick = false) {
     }
 }
 
-// Toggle Simulation Mode
+// Simulation Toggle
 function toggleSimulationMode() {
     isSimulationMode = !isSimulationMode;
     const btn = document.getElementById('toggle-mode-btn');
@@ -257,10 +302,13 @@ function setConnectionStatus(status, text) {
     if (label) label.textContent = text;
 }
 
-// Load Simulated Telemetry
+// Load Simulated Data
 function loadSimulationData(isTick = false) {
     const randomKp = Math.floor(Math.random() * 5) + 1;
     const fractionalChoice = [0.00, 0.33, 0.67][Math.floor(Math.random() * 3)];
+    latestObservationalData.bz = (Math.random() * 20 - 10).toFixed(1);
+    latestObservationalData.noaaMClassProb = Math.floor(Math.random() * 40) + 10;
+    
     const simulatedData = {
         kp: (randomKp + fractionalChoice).toFixed(2),
         xrayFlux: Math.random() * 8e-6 + 5e-7,
@@ -270,7 +318,7 @@ function loadSimulationData(isTick = false) {
     updateUI(simulatedData, isTick);
 }
 
-// Convert raw Kp into scientific fractional thirds
+// Scientific formatting helpers
 function formatDetailedKp(rawKp, windSpeed) {
     let base = Math.floor(rawKp);
     if (rawKp === base) {
@@ -280,7 +328,6 @@ function formatDetailedKp(rawKp, windSpeed) {
     return rawKp;
 }
 
-// Normalized Flare Score (A=0-1, B=1-2, C=2-3, M=3-4, X=4+)
 function getFlareScore(flux) {
     if (flux >= 1e-4) return 4 + Math.min(5, (flux / 1e-4) / 10);
     if (flux >= 1e-5) return 3 + Math.min(1, (flux / 1e-5) / 10);
@@ -297,22 +344,39 @@ function calculateDetailedFlare(flux) {
     return `A${(flux / 1e-8).toFixed(2)}`;
 }
 
-// Threshold-Anchored Probability & Forecasting Calculator
+// ADVANCED SOLAR OBSERVATIONAL PROBABILITY ENGINE
 function calculateProbabilities(windSpeed, windDensity, flux, preciseKp) {
+    // 1. Kp Storm Probability (Incorporates IMF Bz coupling vector & NOAA 3-day forecast)
+    const bz = latestObservationalData.bz;
+    let bzRiskFactor = bz < -5 ? Math.abs(bz) * 4 : 0; // Southward magnetic coupling sharply escalates storm risk
     let kpSpeedFactor = Math.max(0, (windSpeed - 400) / 250);
-    let kpDensityFactor = windDensity > 7 ? 0.2 : 0.05;
-    let baseKpProb = ((preciseKp / 5.0) * 0.5 + kpSpeedFactor * 0.3 + kpDensityFactor) * 100;
+    
+    let baseKpProb = ((preciseKp / 5.0) * 35) + (kpSpeedFactor * 25) + bzRiskFactor + (windDensity > 8 ? 15 : 5);
+    
+    // Blend with official NOAA 3-day model prediction if available
+    if (latestObservationalData.noaaMaxForecastKp !== null) {
+        let modelPredictionProb = (latestObservationalData.noaaMaxForecastKp / 5.0) * 100;
+        baseKpProb = (baseKpProb * 0.6) + (modelPredictionProb * 0.4);
+    }
+
     let kpProb = Math.min(98, Math.max(5, Math.round(baseKpProb)));
-    let kpEstPeak = Math.min(9.0, preciseKp + (windSpeed > 500 ? 1.5 : 0.5)).toFixed(2);
-    let kpEta = windSpeed > 500 ? "1–3 hrs" : (windSpeed > 430 ? "4–8 hrs" : "12+ hrs");
+    let kpEstPeak = Math.min(9.0, preciseKp + (bz < -8 ? 2.0 : (windSpeed > 500 ? 1.2 : 0.4))).toFixed(2);
+    let kpEta = bz < -6 ? "Imminent (15–45 min)" : (windSpeed > 450 ? "3–6 hours" : "Quiet Outlook (24h)");
 
+    // 2. Solar Flare Probability (Blended with NOAA active sunspot region disk observations)
     let flareRatio = flux / 1e-5;
-    let baseFlareProb = Math.min(99, Math.max(5, Math.round(flareRatio * 40 + (flux > 1e-6 ? 20 : 5))));
-    let flareProb = flux >= 1e-5 ? Math.max(85, baseFlareProb) : baseFlareProb;
-    let flareRiskClass = flux >= 1e-4 ? "X-Class Imminent" : (flux >= 1e-5 ? "M-Class Active" : "C-Class Baseline");
-    let flareEta = flux >= 5.0e-6 ? "Next 1–3 hours" : "Stable Window (24h)";
+    let calculatedFlareProb = Math.min(99, Math.max(5, Math.round(flareRatio * 40 + (flux > 1e-6 ? 20 : 5))));
+    
+    let finalFlareProb = calculatedFlareProb;
+    if (latestObservationalData.noaaMClassProb !== null) {
+        // High-weight integration of NOAA satellite solar active region observations
+        finalFlareProb = Math.round((calculatedFlareProb * 0.4) + (latestObservationalData.noaaMClassProb * 0.6));
+    }
 
-    return { kpProb, kpEstPeak, kpEta, flareProb, flareRiskClass, flareEta };
+    let flareRiskClass = flux >= 1e-4 ? "X-Class Active" : (finalFlareProb >= 40 ? "M-Class Risk Elevated" : "C-Class Baseline");
+    let flareEta = finalFlareProb >= 50 ? "High Risk Window (1–6h)" : "Stable Sunspot Window";
+
+    return { kpProb, kpEstPeak, kpEta, flareProb: finalFlareProb, flareRiskClass, flareEta };
 }
 
 // Web Audio Synthesizer
@@ -348,12 +412,11 @@ function playAudioAlert(type) {
     }
 }
 
-// Strict Threshold Watcher
+// Strict Notification Watcher
 function evaluateSoundTriggers(currentKp, currentFlux) {
     const currentFlareScore = getFlareScore(currentFlux);
     const detailedFlare = calculateDetailedFlare(currentFlux);
 
-    // Absolute Rule: Must meet Kp >= 4.0 OR Flare M-Class and above (flux >= 1e-5)
     const meetsThreshold = currentKp >= 4.0 || currentFlux >= 1e-5;
 
     if (previousKp !== null && previousFlareScore !== null) {
@@ -370,7 +433,6 @@ function evaluateSoundTriggers(currentKp, currentFlux) {
                 playAudioAlert('beep');
             }
 
-            // Dispatch email webhook only if threshold is met
             sendWebhookAlert(currentKp, detailedFlare);
         }
     }
@@ -382,7 +444,7 @@ function evaluateSoundTriggers(currentKp, currentFlux) {
     localStorage.setItem('solar_prev_flare', previousFlareScore);
 }
 
-// Update UI Elements safely
+// Update UI
 function updateUI(data, isTick = true) {
     const preciseKp = formatDetailedKp(parseFloat(data.kp), parseFloat(data.solarWindSpeed));
     const flux = Number(data.xrayFlux);
@@ -442,7 +504,7 @@ function updateUI(data, isTick = true) {
     updateChartDisplay();
 }
 
-// Chart.js Initialization
+// Chart Initialization
 function initChart() {
     const canvas = document.getElementById('spaceWeatherChart');
     if (!canvas) return;
@@ -511,7 +573,7 @@ function initChart() {
     });
 }
 
-// Render Chart dynamically with Auto-Scaling & Class formatting
+// Render Chart Display
 function updateChartDisplay() {
     if (!weatherChart) return;
 
