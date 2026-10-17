@@ -1,4 +1,4 @@
-// NOAA Live & Forecast Endpoints (Updated to modern RTSW paths)
+// NOAA Live & Forecast Endpoints
 const ENDPOINTS = {
     kp: 'https://services.swpc.noaa.gov/json/planetary_k_index_1m.json',
     xray: 'https://services.swpc.noaa.gov/json/goes/primary/xrays-6-hour.json',
@@ -15,11 +15,7 @@ let weatherChart = null;
 let currentChartType = 'kp';      // 'kp' or 'flare'
 let currentTimeRange = '30m';     // '30m' or '24h'
 
-// State tracking for Sheet Connection
-let isSheetConnected = false;
-let offlineQueue = [];
-
-// Rolling history buffer
+// Rolling history buffer (local-first storage)
 let telemetryHistory = [];
 
 let latestObservationalData = {
@@ -46,9 +42,6 @@ if (savedDate === todayUtcStr) {
 
         const savedFlare = localStorage.getItem('solar_prev_flare');
         if (savedFlare !== null) previousFlareScore = parseFloat(savedFlare);
-
-        const savedQueue = localStorage.getItem('solar_offline_queue');
-        if (savedQueue) offlineQueue = JSON.parse(savedQueue);
     } catch (e) {
         console.warn('Error loading local storage:', e);
     }
@@ -56,7 +49,6 @@ if (savedDate === todayUtcStr) {
     localStorage.removeItem('solar_history');
     localStorage.removeItem('solar_prev_kp');
     localStorage.removeItem('solar_prev_flare');
-    localStorage.removeItem('solar_offline_queue');
     localStorage.setItem('solar_date', todayUtcStr);
 }
 
@@ -72,12 +64,6 @@ document.addEventListener('DOMContentLoaded', () => {
     } else {
         updateUI({ kp: 2.0, xrayFlux: 1e-7, solarWindSpeed: 410, solarWindDensity: 5.2 }, false);
     }
-
-    // Check Google Sheets connectivity & sync history on boot
-    checkSheetConnection();
-
-    // 1-Minute Heartbeat to check Sheet connection and sync
-    setInterval(checkSheetConnection, 60000);
 
     // Initial fetch from NOAA
     fetchData(false);
@@ -148,110 +134,9 @@ function saveGasUrl() {
     const url = inputEl ? inputEl.value.trim() : '';
     if (url) {
         localStorage.setItem('solar_gas_url', url);
-        alert('Google Apps Script URL saved!');
-        checkSheetConnection();
+        alert('Google Apps Script URL saved successfully!');
     } else {
         alert('Please enter a valid Web App URL.');
-    }
-}
-
-// JSONP Helper to bypass CORS when fetching history from Google Sheets
-function fetchHistoryViaJSONP() {
-    return new Promise((resolve, reject) => {
-        const url = localStorage.getItem('solar_gas_url') || GAS_ALERT_URL;
-        if (!url) {
-            reject('No URL configured');
-            return;
-        }
-
-        const callbackName = 'sheetCallback_' + Math.round(Math.random() * 100000);
-        const timer = setTimeout(() => {
-            cleanup();
-            reject('Timeout');
-        }, 10000);
-
-        window[callbackName] = function(result) {
-            clearTimeout(timer);
-            cleanup();
-            resolve(result);
-        };
-
-        function cleanup() {
-            delete window[callbackName];
-            const scriptEl = document.getElementById(callbackName);
-            if (scriptEl) scriptEl.remove();
-        }
-
-        const script = document.createElement('script');
-        script.id = callbackName;
-        script.src = `${url}?callback=${callbackName}`;
-        script.onerror = () => {
-            clearTimeout(timer);
-            cleanup();
-            reject('Script load error');
-        };
-        document.body.appendChild(script);
-    });
-}
-
-// 1-Minute Connection Health Check & Auto-Sync Engine
-async function checkSheetConnection() {
-    try {
-        const result = await fetchHistoryViaJSONP();
-
-        if (result && result.status === 'success') {
-            const wasDisconnected = !isSheetConnected;
-            isSheetConnected = true;
-
-            if (result.history && result.history.length > 0) {
-                const sheetHistory = result.history.map(row => {
-                    const rawDate = new Date(row[0]);
-                    const timeStr = !isNaN(rawDate) ? rawDate.toUTCString().slice(17, 25) : '00:00:00';
-                    const kp = parseFloat(row[1]) || 2.0;
-                    const flareStr = row[2] || 'C1.00';
-                    const flux = parseFloat(row[3]) || 1e-7;
-                    const flareScore = getFlareScore(flux);
-                    return { time: timeStr, kp, flux, flareScore, flareStr };
-                });
-
-                if (sheetHistory.length > 0) {
-                    telemetryHistory = sheetHistory.slice(-360);
-                    localStorage.setItem('solar_history', JSON.stringify(telemetryHistory));
-                    updateChartDisplay();
-                }
-            }
-
-            if (wasDisconnected || offlineQueue.length > 0) {
-                flushOfflineQueue();
-            }
-        } else {
-            isSheetConnected = false;
-        }
-    } catch (e) {
-        console.warn('Google Sheets unreachable via JSONP. Running in Local-Only Mode.', e);
-        isSheetConnected = false;
-    }
-}
-
-// Flush Offline Queued Entries to Google Sheets
-async function flushOfflineQueue() {
-    if (offlineQueue.length === 0) return;
-
-    const url = localStorage.getItem('solar_gas_url') || GAS_ALERT_URL;
-    if (!url) return;
-
-    try {
-        await fetch(url, {
-            method: 'POST',
-            mode: 'no-cors',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'log_batch', items: offlineQueue })
-        });
-
-        offlineQueue = [];
-        localStorage.removeItem('solar_offline_queue');
-    } catch (e) {
-        console.warn('Failed to flush offline queue:', e);
     }
 }
 
@@ -280,7 +165,7 @@ async function sendTestAlert() {
     }
 
     const payload = {
-        action: 'log_and_alert',
+        time: new Date().toUTCString(),
         kp: kpVal.toFixed(2),
         flare: flareText,
         solarWindSpeed: Math.round(windSpeed),
@@ -298,7 +183,7 @@ async function sendTestAlert() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
-        alert('Test alert triggered and logged successfully!');
+        alert('Test alert triggered and logged to Google Sheets successfully!');
     } catch (error) {
         console.error('Error sending alert:', error);
         alert('Failed to send alert.');
@@ -307,7 +192,7 @@ async function sendTestAlert() {
     }
 }
 
-// Webhook & Logging Dispatcher
+// Webhook & Google Sheets Logger (Bypasses CORS via no-cors POST)
 async function sendWebhookAlert(kpVal, flareVal, windSpeed, windDensity, isAlertTrigger = false) {
     const isMOrAbove = flareVal.startsWith('M') || flareVal.startsWith('X');
     
@@ -316,7 +201,9 @@ async function sendWebhookAlert(kpVal, flareVal, windSpeed, windDensity, isAlert
     }
 
     const url = localStorage.getItem('solar_gas_url') || GAS_ALERT_URL;
-    const itemData = {
+    if (!url) return;
+
+    const payload = {
         time: new Date().toUTCString(),
         kp: kpVal.toFixed(2),
         flare: flareVal,
@@ -325,26 +212,15 @@ async function sendWebhookAlert(kpVal, flareVal, windSpeed, windDensity, isAlert
         isAlert: isAlertTrigger
     };
 
-    if (!isSheetConnected || !url) {
-        offlineQueue.push(itemData);
-        if (offlineQueue.length > 500) offlineQueue.shift();
-        localStorage.setItem('solar_offline_queue', JSON.stringify(offlineQueue));
-        return;
-    }
-
     try {
         await fetch(url, {
             method: 'POST',
             mode: 'no-cors',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(itemData)
+            body: JSON.stringify(payload)
         });
     } catch (e) {
-        console.warn('Webhook transmission failed. Saving to local queue.', e);
-        offlineQueue.push(itemData);
-        if (offlineQueue.length > 500) offlineQueue.shift();
-        localStorage.setItem('solar_offline_queue', JSON.stringify(offlineQueue));
-        isSheetConnected = false;
+        console.warn('Google Sheets logging failed:', e);
     }
 }
 
@@ -354,7 +230,6 @@ async function fetchSolarObservationData() {
         const imfRes = await fetch(ENDPOINTS.imf);
         const imfData = await imfRes.json();
         const latestImf = imfData[imfData.length - 1];
-        // rtsw_mag_1m.json uses named property 'bz_gsm'
         latestObservationalData.bz = parseFloat(latestImf.bz_gsm || latestImf[3] || 0);
     } catch (e) { console.warn('IMF Bz fetch failed', e); }
 
@@ -378,7 +253,7 @@ async function fetchSolarObservationData() {
     } catch (e) { console.warn('NOAA 3-Day Kp Model fetch failed', e); }
 }
 
-// Main Data Ingestion (Using Modern RTSW JSON Endpoints)
+// Main Data Ingestion
 async function fetchData(isTick = false) {
     if (isSimulationMode) {
         loadSimulationData(isTick);
@@ -413,7 +288,6 @@ async function fetchData(isTick = false) {
             if (windRes.ok) {
                 const windData = await windRes.json();
                 const latest = windData[windData.length - 1];
-                // rtsw_wind_1m.json uses named properties
                 windDensity = parseFloat(latest.proton_density || 5.2);
                 windSpeed = parseFloat(latest.proton_speed || 410);
             }
@@ -428,8 +302,7 @@ async function fetchData(isTick = false) {
             solarWindDensity: windDensity
         }, isTick);
 
-        const sheetStatus = isSheetConnected ? ' | Sheet Connected' : ' | Local-Only Mode';
-        setConnectionStatus('live', `NOAA API: Live${sheetStatus}`);
+        setConnectionStatus('live', 'NOAA API: Live | Logging to Sheets');
     } catch (error) {
         console.warn('Network error. Switching to simulation.', error);
         setConnectionStatus('sim', 'API Offline (Simulation Active)');
@@ -744,6 +617,7 @@ function updateChartDisplay() {
         labels = ['-24h', '-20h', '-16h', '-12h', '-8h', '-4h', 'Now'];
         const latestItem = telemetryHistory.length > 0 ? telemetryHistory[telemetryHistory.length - 1] : { kp: 2.33, flareScore: 1.50 };
         
+        |
         if (currentChartType === 'kp') {
             dataPoints = [2.00, 2.33, 2.67, 3.00, 2.33, 2.00, latestItem.kp];
         } else {
