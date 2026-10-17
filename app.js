@@ -88,16 +88,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Event Listeners
     const refreshBtn = document.getElementById('refresh-btn');
-    if (refreshBtn) refreshBtn.addEventListener('click', () => fetchData(false));
-
-    const toggleModeBtn = document.getElementById('toggle-mode-btn');
-    if (toggleModeBtn) toggleModeBtn.addEventListener('click', toggleSimulationMode);
-
-    const saveGasBtn = document.getElementById('save-gas-btn');
-    if (saveGasBtn) saveGasBtn.addEventListener('click', saveGasUrl);
-
-    const testAlertBtn = document.getElementById('test-alert-btn');
-    if (testAlertBtn) testAlertBtn.addEventListener('click', sendTestAlert);
+    if (refreshBtn) {
+        refreshBtn.addEventListener('click', async () => {
+            refreshBtn.innerHTML = '<i class="fa-solid fa-rotate fa-spin"></i>';
+            await fetchData(false);
+            await checkConnectionAndSync();
+            refreshBtn.innerHTML = '<i class="fa-solid fa-rotate"></i>';
+        });
+    }
 
     // Chart metric tabs
     document.querySelectorAll('.tab-btn').forEach(btn => {
