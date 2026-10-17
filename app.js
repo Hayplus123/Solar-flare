@@ -29,14 +29,16 @@ let latestObservationalData = {
     noaaMaxForecastKp: null
 };
 
-// --- DAILY PERSISTENCE & LOCAL STORAGE INITIALIZATION ---
+// --- DAILY PERSISTENCE & LOCAL STORAGE INITIALIZATION (Cache Buster v2) ---
+const STORAGE_VERSION = 'v2_clean';
+const savedVersion = localStorage.getItem('solar_storage_version');
 const todayUtcStr = new Date().toISOString().slice(0, 10);
 const savedDate = localStorage.getItem('solar_date');
 
 let previousKp = null;
 let previousFlareScore = null;
 
-if (savedDate === todayUtcStr) {
+if (savedVersion === STORAGE_VERSION && savedDate === todayUtcStr) {
     try {
         const savedHistory = localStorage.getItem('solar_history');
         if (savedHistory) telemetryHistory = JSON.parse(savedHistory);
@@ -53,11 +55,14 @@ if (savedDate === todayUtcStr) {
         console.warn('Error loading local storage:', e);
     }
 } else {
+    // Wipe old corrupted cache and set new version
     localStorage.removeItem('solar_history');
     localStorage.removeItem('solar_prev_kp');
     localStorage.removeItem('solar_prev_flare');
     localStorage.removeItem('solar_offline_queue');
+    localStorage.setItem('solar_storage_version', STORAGE_VERSION);
     localStorage.setItem('solar_date', todayUtcStr);
+    telemetryHistory = [];
 }
 
 // App Initialization
@@ -166,6 +171,21 @@ function saveGasUrl() {
     }
 }
 
+// Helper to convert logged flare strings back to flux
+function fluxFromFlareString(flareStr) {
+    if (!flareStr || flareStr.length < 2) return 1e-7;
+    const type = flareStr[0].toUpperCase();
+    const val = parseFloat(flareStr.slice(1)) || 1.0;
+    switch(type) {
+        case 'X': return val * 1e-4;
+        case 'M': return val * 1e-5;
+        case 'C': return val * 1e-6;
+        case 'B': return val * 1e-7;
+        case 'A': return val * 1e-8;
+        default: return 1e-7;
+    }
+}
+
 // 30-Second Heartbeat: Check connection & sync history from Google Sheets CSV
 async function checkConnectionAndSync() {
     try {
@@ -179,11 +199,24 @@ async function checkConnectionAndSync() {
         
         if (validRows.length > 0) {
             telemetryHistory = validRows.slice(-360).map(r => {
-                const timeRaw = new Date(r[0]);
-                const timeStr = !isNaN(timeRaw) ? timeRaw.toUTCString().slice(17, 25) : '00:00:00';
+                let timeStr = '00:00:00';
+                const rawTime = r[0];
+                if (rawTime) {
+                    if (rawTime.includes('T')) {
+                        timeStr = rawTime.slice(11, 19);
+                    } else if (rawTime.includes(':')) {
+                        const parts = rawTime.split(' ');
+                        const timePart = parts.find(p => p.includes(':'));
+                        if (timePart) timeStr = timePart.slice(0, 8);
+                    } else {
+                        const d = new Date(rawTime);
+                        if (!isNaN(d)) timeStr = d.toUTCString().slice(17, 25);
+                    }
+                }
+
                 const kp = parseFloat(r[1]) || 2.0;
-                const flareStr = r[2] || 'C1.00';
-                const flux = parseFloat(r[3]) || 1e-7;
+                const flareStr = r[2] || 'B7.49';
+                const flux = fluxFromFlareString(flareStr);
                 return {
                     time: timeStr,
                     kp: kp,
@@ -442,16 +475,6 @@ function loadSimulationData(isTick = false) {
     updateUI(simulatedData, isTick);
 }
 
-// Scientific formatting helpers
-function formatDetailedKp(rawKp, windSpeed) {
-    let base = Math.floor(rawKp);
-    if (rawKp === base) {
-        let offset = (windSpeed > 450) ? 0.67 : (windSpeed > 400 ? 0.33 : 0.00);
-        return Math.min(9, base + offset);
-    }
-    return rawKp;
-}
-
 function getFlareScore(flux) {
     if (flux >= 1e-4) return 4 + Math.min(5, (flux / 1e-4) / 10);
     if (flux >= 1e-5) return 3 + Math.min(1, (flux / 1e-5) / 10);
@@ -469,12 +492,12 @@ function calculateDetailedFlare(flux) {
 }
 
 // Advanced Observational Probability Engine
-function calculateProbabilities(windSpeed, windDensity, flux, preciseKp) {
+function calculateProbabilities(windSpeed, windDensity, flux, currentKp) {
     const bz = latestObservationalData.bz;
     let bzRiskFactor = bz < -5 ? Math.abs(bz) * 4 : 0;
     let kpSpeedFactor = Math.max(0, (windSpeed - 400) / 250);
     
-    let baseKpProb = ((preciseKp / 5.0) * 35) + (kpSpeedFactor * 25) + bzRiskFactor + (windDensity > 8 ? 15 : 5);
+    let baseKpProb = ((currentKp / 5.0) * 35) + (kpSpeedFactor * 25) + bzRiskFactor + (windDensity > 8 ? 15 : 5);
     
     if (latestObservationalData.noaaMaxForecastKp !== null) {
         let modelPredictionProb = (latestObservationalData.noaaMaxForecastKp / 5.0) * 100;
@@ -482,7 +505,7 @@ function calculateProbabilities(windSpeed, windDensity, flux, preciseKp) {
     }
 
     let kpProb = Math.min(98, Math.max(5, Math.round(baseKpProb)));
-    let kpEstPeak = Math.min(9.0, preciseKp + (bz < -8 ? 2.0 : (windSpeed > 500 ? 1.2 : 0.4))).toFixed(2);
+    let kpEstPeak = Math.min(9.0, currentKp + (bz < -8 ? 2.0 : (windSpeed > 500 ? 1.2 : 0.4))).toFixed(2);
     let kpEta = bz < -6 ? "Imminent (15–45 min)" : (windSpeed > 450 ? "3–6 hours" : "Quiet Outlook (24h)");
 
     let flareRatio = flux / 1e-5;
@@ -568,7 +591,7 @@ function evaluateSoundTriggers(currentKp, currentFlux, windSpeed, windDensity) {
 
 // Update UI
 function updateUI(data, isTick = true) {
-    const preciseKp = formatDetailedKp(parseFloat(data.kp), parseFloat(data.solarWindSpeed));
+    const currentKp = parseFloat(data.kp) || 2.0;
     const flux = Number(data.xrayFlux);
     const flareScore = getFlareScore(flux);
     const flareStr = calculateDetailedFlare(flux);
@@ -576,27 +599,27 @@ function updateUI(data, isTick = true) {
     const windDensity = parseFloat(data.solarWindDensity);
 
     if (isTick) {
-        evaluateSoundTriggers(preciseKp, flux, windSpeed, windDensity);
+        evaluateSoundTriggers(currentKp, flux, windSpeed, windDensity);
 
-        const nowStr = new Date().toUTCString().slice(17, 25);
-        telemetryHistory.push({ time: nowStr, kp: preciseKp, flux: flux, flareScore: flareScore, flareStr: flareStr });
+        const nowStr = new Date().toISOString().slice(11, 19);
+        telemetryHistory.push({ time: nowStr, kp: currentKp, flux: flux, flareScore: flareScore, flareStr: flareStr });
         if (telemetryHistory.length > 360) telemetryHistory.shift();
 
         localStorage.setItem('solar_history', JSON.stringify(telemetryHistory));
         localStorage.setItem('solar_date', new Date().toISOString().slice(0, 10));
     }
 
-    const probs = calculateProbabilities(windSpeed, windDensity, flux, preciseKp);
+    const probs = calculateProbabilities(windSpeed, windDensity, flux, currentKp);
 
     const kpEl = document.getElementById('current-kp');
-    if (kpEl) kpEl.textContent = preciseKp.toFixed(2);
+    if (kpEl) kpEl.textContent = currentKp.toFixed(2);
 
     const progressEl = document.getElementById('kp-progress');
-    if (progressEl) progressEl.style.width = `${(preciseKp / 9) * 100}%`;
+    if (progressEl) progressEl.style.width = `${(currentKp / 9) * 100}%`;
     
     let statusText = 'Quiet Conditions';
-    if (preciseKp >= 5) statusText = 'G1-G3 Geomagnetic Storm Warning';
-    else if (preciseKp >= 4) statusText = 'Active Geomagnetic Activity';
+    if (currentKp >= 5) statusText = 'G1-G3 Geomagnetic Storm Warning';
+    else if (currentKp >= 4) statusText = 'Active Geomagnetic Activity';
     
     const labelEl = document.getElementById('kp-status-label');
     if (labelEl) labelEl.textContent = statusText;
