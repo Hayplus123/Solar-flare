@@ -186,7 +186,7 @@ function fluxFromFlareString(flareStr) {
     }
 }
 
-// 30-Second Heartbeat: Check connection & sync history from Google Sheets CSV
+// 30-Second Heartbeat: Check connection & sync history from Google Sheets CSV (with strict data filtering)
 async function checkConnectionAndSync() {
     try {
         const response = await fetch(SHEET_CSV_URL, { cache: 'no-store' });
@@ -198,7 +198,7 @@ async function checkConnectionAndSync() {
         const validRows = rows.slice(1).filter(r => r.length >= 4 && r[1] !== undefined);
         
         if (validRows.length > 0) {
-            telemetryHistory = validRows.slice(-360).map(r => {
+            telemetryHistory = validRows.map(r => {
                 let timeStr = '00:00:00';
                 const rawTime = r[0];
                 if (rawTime) {
@@ -214,7 +214,7 @@ async function checkConnectionAndSync() {
                     }
                 }
 
-                const kp = parseFloat(r[1]) || 2.0;
+                const kp = parseFloat(r[1]);
                 const flareStr = r[2] || 'B7.49';
                 const flux = fluxFromFlareString(flareStr);
                 return {
@@ -224,7 +224,8 @@ async function checkConnectionAndSync() {
                     flareScore: getFlareScore(flux),
                     flareStr: flareStr
                 };
-            });
+            }).filter(item => item.time !== '00:00:00' && !isNaN(item.kp) && item.kp >= 0 && item.kp <= 9.0)
+              .slice(-360); // Drop corrupted rows, keep last 360 valid points
 
             localStorage.setItem('solar_history', JSON.stringify(telemetryHistory));
             updateChartDisplay();
