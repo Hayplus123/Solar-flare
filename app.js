@@ -15,8 +15,9 @@ let weatherChart = null;
 let currentChartType = 'kp';      // 'kp' or 'flare'
 let currentTimeRange = '30m';     // '30m' or '24h'
 
-// Rolling history buffer (local-first storage)
+// Rolling history buffer & Offline Queue (Local-First Resilience)
 let telemetryHistory = [];
+let offlineQueue = [];
 
 let latestObservationalData = {
     bz: 0,
@@ -42,6 +43,9 @@ if (savedDate === todayUtcStr) {
 
         const savedFlare = localStorage.getItem('solar_prev_flare');
         if (savedFlare !== null) previousFlareScore = parseFloat(savedFlare);
+
+        const savedQueue = localStorage.getItem('solar_offline_queue');
+        if (savedQueue) offlineQueue = JSON.parse(savedQueue);
     } catch (e) {
         console.warn('Error loading local storage:', e);
     }
@@ -49,6 +53,7 @@ if (savedDate === todayUtcStr) {
     localStorage.removeItem('solar_history');
     localStorage.removeItem('solar_prev_kp');
     localStorage.removeItem('solar_prev_flare');
+    localStorage.removeItem('solar_offline_queue');
     localStorage.setItem('solar_date', todayUtcStr);
 }
 
@@ -140,7 +145,67 @@ function saveGasUrl() {
     }
 }
 
-// Hardened Test Alert Trigger
+// Flush Offline Queued Entries to Google Sheets when reconnected
+async function flushOfflineQueue() {
+    if (offlineQueue.length === 0) return;
+    const url = localStorage.getItem('solar_gas_url') || GAS_ALERT_URL;
+    if (!url) return;
+
+    while (offlineQueue.length > 0) {
+        const item = offlineQueue[0];
+        try {
+            await fetch(url, {
+                method: 'POST',
+                mode: 'no-cors',
+                body: JSON.stringify(item)
+            });
+            offlineQueue.shift();
+            localStorage.setItem('solar_offline_queue', JSON.stringify(offlineQueue));
+        } catch (e) {
+            break;
+        }
+    }
+}
+
+// Webhook & Google Sheets Logger with Offline Fallback Queue
+async function sendWebhookAlert(kpVal, flareVal, windSpeed, windDensity, isAlertTrigger = false) {
+    const isMOrAbove = flareVal.startsWith('M') || flareVal.startsWith('X');
+    
+    if (isAlertTrigger && kpVal < 4.0 && !isMOrAbove) {
+        return;
+    }
+
+    const url = localStorage.getItem('solar_gas_url') || GAS_ALERT_URL;
+    if (!url) return;
+
+    const payload = {
+        time: new Date().toUTCString(),
+        kp: kpVal.toFixed(2),
+        flare: flareVal,
+        solarWindSpeed: Math.round(windSpeed),
+        solarWindDensity: windDensity,
+        isAlert: isAlertTrigger
+    };
+
+    try {
+        await fetch(url, {
+            method: 'POST',
+            mode: 'no-cors',
+            body: JSON.stringify(payload)
+        });
+
+        if (offlineQueue.length > 0) {
+            flushOfflineQueue();
+        }
+    } catch (e) {
+        console.warn('Network offline. Queuing telemetry point locally.', e);
+        offlineQueue.push(payload);
+        if (offlineQueue.length > 500) offlineQueue.shift();
+        localStorage.setItem('solar_offline_queue', JSON.stringify(offlineQueue));
+    }
+}
+
+// Hardened Test Alert Trigger with Offline Fallback
 async function sendTestAlert() {
     const url = localStorage.getItem('solar_gas_url') || GAS_ALERT_URL;
     if (!url) {
@@ -180,46 +245,16 @@ async function sendTestAlert() {
         await fetch(url, {
             method: 'POST',
             mode: 'no-cors',
-            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
         alert('Test alert triggered and logged to Google Sheets successfully!');
     } catch (error) {
-        console.error('Error sending alert:', error);
-        alert('Failed to send alert.');
+        console.error('Error sending alert, queued locally:', error);
+        offlineQueue.push(payload);
+        localStorage.setItem('solar_offline_queue', JSON.stringify(offlineQueue));
+        alert('Network offline. Alert queued and will sync when reconnected.');
     } finally {
         if (btn) btn.innerHTML = '<i class="fa-solid fa-paper-plane"></i> Send Test Email Alert';
-    }
-}
-
-// Webhook & Google Sheets Logger (Clean POST without preflight headers)
-async function sendWebhookAlert(kpVal, flareVal, windSpeed, windDensity, isAlertTrigger = false) {
-    const isMOrAbove = flareVal.startsWith('M') || flareVal.startsWith('X');
-    
-    if (isAlertTrigger && kpVal < 4.0 && !isMOrAbove) {
-        return;
-    }
-
-    const url = localStorage.getItem('solar_gas_url') || GAS_ALERT_URL;
-    if (!url) return;
-
-    const payload = {
-        time: new Date().toUTCString(),
-        kp: kpVal.toFixed(2),
-        flare: flareVal,
-        solarWindSpeed: Math.round(windSpeed),
-        solarWindDensity: windDensity,
-        isAlert: isAlertTrigger
-    };
-
-    try {
-        await fetch(url, {
-            method: 'POST',
-            mode: 'no-cors',
-            body: JSON.stringify(payload)
-        });
-    } catch (e) {
-        console.warn('Google Sheets logging failed:', e);
     }
 }
 
