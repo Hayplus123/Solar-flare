@@ -1,10 +1,9 @@
-// NOAA Live & Forecast Endpoints
+// NOAA Live & Forecast Endpoints (Updated to modern RTSW paths)
 const ENDPOINTS = {
     kp: 'https://services.swpc.noaa.gov/json/planetary_k_index_1m.json',
     xray: 'https://services.swpc.noaa.gov/json/goes/primary/xrays-6-hour.json',
-    solarWind1Day: 'https://services.swpc.noaa.gov/products/solar-wind/plasma-1-day.json',
-    solarWind7Day: 'https://services.swpc.noaa.gov/products/solar-wind/plasma-7-day.json',
-    imf: 'https://services.swpc.noaa.gov/products/solar-wind/mag-1-day.json',
+    solarWind: 'https://services.swpc.noaa.gov/json/rtsw/rtsw_wind_1m.json',
+    imf: 'https://services.swpc.noaa.gov/json/rtsw/rtsw_mag_1m.json',
     noaa3DayKp: 'https://services.swpc.noaa.gov/products/noaa-planetary-k-index-forecast.json',
     noaaFlareProb: 'https://services.swpc.noaa.gov/json/solar_probabilities.json'
 };
@@ -204,7 +203,6 @@ async function checkSheetConnection() {
             const wasDisconnected = !isSheetConnected;
             isSheetConnected = true;
 
-            // Sync down: If sheet has history, merge/update local storage
             if (result.history && result.history.length > 0) {
                 const sheetHistory = result.history.map(row => {
                     const rawDate = new Date(row[0]);
@@ -223,7 +221,6 @@ async function checkSheetConnection() {
                 }
             }
 
-            // Sync up: Flush any offline queued items
             if (wasDisconnected || offlineQueue.length > 0) {
                 flushOfflineQueue();
             }
@@ -310,7 +307,7 @@ async function sendTestAlert() {
     }
 }
 
-// Webhook & Logging Dispatcher (Dual Local & Sheet Sync)
+// Webhook & Logging Dispatcher
 async function sendWebhookAlert(kpVal, flareVal, windSpeed, windDensity, isAlertTrigger = false) {
     const isMOrAbove = flareVal.startsWith('M') || flareVal.startsWith('X');
     
@@ -357,7 +354,8 @@ async function fetchSolarObservationData() {
         const imfRes = await fetch(ENDPOINTS.imf);
         const imfData = await imfRes.json();
         const latestImf = imfData[imfData.length - 1];
-        latestObservationalData.bz = parseFloat(latestImf[3] || 0);
+        // rtsw_mag_1m.json uses named property 'bz_gsm'
+        latestObservationalData.bz = parseFloat(latestImf.bz_gsm || latestImf[3] || 0);
     } catch (e) { console.warn('IMF Bz fetch failed', e); }
 
     try {
@@ -380,7 +378,7 @@ async function fetchSolarObservationData() {
     } catch (e) { console.warn('NOAA 3-Day Kp Model fetch failed', e); }
 }
 
-// Main Data Ingestion (with Plasma Fallback)
+// Main Data Ingestion (Using Modern RTSW JSON Endpoints)
 async function fetchData(isTick = false) {
     if (isSimulationMode) {
         loadSimulationData(isTick);
@@ -411,15 +409,13 @@ async function fetchData(isTick = false) {
         let windSpeed = 410;
         let windDensity = 5.2;
         try {
-            let windRes = await fetch(ENDPOINTS.solarWind1Day);
-            if (!windRes.ok) {
-                windRes = await fetch(ENDPOINTS.solarWind7Day);
-            }
+            const windRes = await fetch(ENDPOINTS.solarWind);
             if (windRes.ok) {
                 const windData = await windRes.json();
                 const latest = windData[windData.length - 1];
-                windDensity = parseFloat(latest[1] || 5.2);
-                windSpeed = parseFloat(latest[2] || 410);
+                // rtsw_wind_1m.json uses named properties
+                windDensity = parseFloat(latest.proton_density || 5.2);
+                windSpeed = parseFloat(latest.proton_speed || 410);
             }
         } catch (e) {
             console.warn('Solar wind plasma fetch failed, using defaults', e);
