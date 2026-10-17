@@ -9,7 +9,7 @@ const ENDPOINTS = {
     noaaFlareProb: 'https://services.swpc.noaa.gov/json/solar_probabilities.json'
 };
 
-const GAS_ALERT_URL = 'https://script.google.com/macros/s/AKfycby2h9nSrgR7yNdrn3JdHLKcejY-gp2KK2eaxM-dWPeSJWFSRCrJOAK_zMwd1WAVCB8/exec';
+const GAS_ALERT_URL = 'https://script.google.com/macros/s/AKfycbys99AC4kvUTWytVrMur4mPFBqxnd2r4tpYPLi7TbOcxscCdccETYKq8JJCUa8USHtr/exec';
 
 let isSimulationMode = false;
 let weatherChart = null;
