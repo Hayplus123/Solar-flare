@@ -279,7 +279,7 @@ async function sendTestAlert() {
     }
 
     const payload = {
-        time: new Date().toUTCString(),
+        time: new Date().toISOString(), // <--- Changed from toUTCString()
         kp: kpVal.toFixed(2),
         flare: flareText,
         solarWindSpeed: Math.round(windSpeed),
