@@ -15,7 +15,7 @@ let weatherChart = null;
 let currentChartType = 'kp';      // 'kp' or 'flare'
 let currentTimeRange = '30m';     // '30m' or '24h'
 
-// Rolling history buffer (holds 360 points = 30 minutes of data at 5-second intervals)
+// Rolling history buffer
 let telemetryHistory = [];
 
 // Storage for satellite solar observations
@@ -35,9 +35,6 @@ let previousFlareScore = null;
 
 if (savedDate === todayUtcStr) {
     try {
-        const savedHistory = localStorage.getItem('solar_history');
-        if (savedHistory) telemetryHistory = JSON.parse(savedHistory);
-
         const savedKp = localStorage.getItem('solar_prev_kp');
         if (savedKp !== null) previousKp = parseFloat(savedKp);
 
@@ -47,7 +44,6 @@ if (savedDate === todayUtcStr) {
         console.warn('Error loading saved storage:', e);
     }
 } else {
-    localStorage.removeItem('solar_history');
     localStorage.removeItem('solar_prev_kp');
     localStorage.removeItem('solar_prev_flare');
     localStorage.setItem('solar_date', todayUtcStr);
@@ -55,15 +51,20 @@ if (savedDate === todayUtcStr) {
 // ------------------------------------------------
 
 // Initialize App safely
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     initClock();
     initChart();
     initEmailIntegration();
 
-    // Baseline render
-    updateUI({ kp: 2.0, xrayFlux: 1e-7, solarWindSpeed: 410, solarWindDensity: 5.2 }, false);
+    // Fetch existing historical logs from Google Sheets on startup!
+    await fetchHistoryFromSheets();
 
-    // Initial manual fetch
+    // Baseline render if empty
+    if (telemetryHistory.length === 0) {
+        updateUI({ kp: 2.0, xrayFlux: 1e-7, solarWindSpeed: 410, solarWindDensity: 5.2 }, false);
+    }
+
+    // Initial manual fetch from NOAA
     fetchData(false);
 
     // Independent 5-second background telemetry ticker
@@ -138,6 +139,37 @@ function saveGasUrl() {
     }
 }
 
+// Fetch Past History from Google Sheets on Startup
+async function fetchHistoryFromSheets() {
+    const url = localStorage.getItem('solar_gas_url') || GAS_ALERT_URL;
+    if (!url) return;
+
+    try {
+        const response = await fetch(url);
+        const result = await response.json();
+        
+        if (result.status === 'success' && result.history && result.history.length > 0) {
+            telemetryHistory = result.history.map(row => {
+                const rawDate = new Date(row[0]);
+                const timeStr = !isNaN(rawDate) ? rawDate.toUTCString().slice(17, 25) : '00:00:00';
+                const kp = parseFloat(row[1]) || 2.0;
+                const flareStr = row[2] || 'C1.00';
+                const flux = parseFloat(row[3]) || 1e-7;
+                const flareScore = getFlareScore(flux);
+                return { time: timeStr, kp, flux, flareScore, flareStr };
+            });
+
+            // Keep latest 360 points for 30m chart buffer
+            if (telemetryHistory.length > 360) {
+                telemetryHistory = telemetryHistory.slice(-360);
+            }
+            updateChartDisplay();
+        }
+    } catch (e) {
+        console.warn('Could not fetch historical data from Google Sheets:', e);
+    }
+}
+
 // Hardened Test Alert Trigger
 async function sendTestAlert() {
     const url = localStorage.getItem('solar_gas_url') || GAS_ALERT_URL;
@@ -149,7 +181,6 @@ async function sendTestAlert() {
     const kpEl = document.getElementById('current-kp');
     const flareEl = document.getElementById('current-flare');
     const windSpeedEl = document.getElementById('solar-wind-speed');
-    const windDensityEl = document.getElementById('solar-wind-density');
 
     const kpVal = kpEl ? parseFloat(kpEl.textContent) : 2.0;
     const flareText = flareEl ? flareEl.textContent : 'C1.00';
@@ -191,11 +222,10 @@ async function sendTestAlert() {
     }
 }
 
-// Webhook Dispatcher to Google Sheets & Email Firewall
+// Webhook & Logging Dispatcher
 async function sendWebhookAlert(kpVal, flareVal, windSpeed, windDensity, isAlertTrigger = false) {
     const isMOrAbove = flareVal.startsWith('M') || flareVal.startsWith('X');
     
-    // If it's an alert trigger, enforce absolute firewall
     if (isAlertTrigger && kpVal < 4.0 && !isMOrAbove) {
         return; // Silently abort email trigger for quiet conditions
     }
@@ -287,7 +317,6 @@ async function fetchData(isTick = false) {
             const windRes = await fetch(ENDPOINTS.solarWind);
             const windData = await windRes.json();
             const latest = windData[windData.length - 1];
-            // CORRECTED INDICES: Index 1 = Density, Index 2 = Speed
             windDensity = parseFloat(latest[1] || 5.2);
             windSpeed = parseFloat(latest[2] || 410);
         } catch (e) { console.warn('Wind fetch failed', e); }
@@ -484,9 +513,6 @@ function updateUI(data, isTick = true) {
         const nowStr = new Date().toUTCString().slice(17, 25);
         telemetryHistory.push({ time: nowStr, kp: preciseKp, flux: flux, flareScore: flareScore, flareStr: flareStr });
         if (telemetryHistory.length > 360) telemetryHistory.shift();
-
-        localStorage.setItem('solar_history', JSON.stringify(telemetryHistory));
-        localStorage.setItem('solar_date', new Date().toISOString().slice(0, 10));
     }
 
     const probs = calculateProbabilities(windSpeed, windDensity, flux, preciseKp);
