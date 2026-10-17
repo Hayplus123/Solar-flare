@@ -20,7 +20,7 @@ let currentTimeRange = '30m';     // '30m' or '24h'
 let isSheetConnected = false;
 let offlineQueue = [];
 
-// Rolling history buffer (holds 360 points = 30 minutes of data at 5-second intervals)
+// Rolling history buffer
 let telemetryHistory = [];
 
 let latestObservationalData = {
@@ -30,14 +30,13 @@ let latestObservationalData = {
     noaaMaxForecastKp: null
 };
 
-// --- DAILY PERSISTENCE & 00:00 UTC RESET LOGIC ---
+// --- DAILY PERSISTENCE & LOCAL STORAGE INITIALIZATION ---
 const todayUtcStr = new Date().toISOString().slice(0, 10);
 const savedDate = localStorage.getItem('solar_date');
 
 let previousKp = null;
 let previousFlareScore = null;
 
-// Initial Local Storage Load (Local-First Priority)
 if (savedDate === todayUtcStr) {
     try {
         const savedHistory = localStorage.getItem('solar_history');
@@ -52,7 +51,7 @@ if (savedDate === todayUtcStr) {
         const savedQueue = localStorage.getItem('solar_offline_queue');
         if (savedQueue) offlineQueue = JSON.parse(savedQueue);
     } catch (e) {
-        console.warn('Error loading saved local storage:', e);
+        console.warn('Error loading local storage:', e);
     }
 } else {
     localStorage.removeItem('solar_history');
@@ -68,17 +67,17 @@ document.addEventListener('DOMContentLoaded', () => {
     initChart();
     initEmailIntegration();
 
-    // Baseline render from Local Data immediately
+    // Local-First Render instantly
     if (telemetryHistory.length > 0) {
         updateChartDisplay();
     } else {
         updateUI({ kp: 2.0, xrayFlux: 1e-7, solarWindSpeed: 410, solarWindDensity: 5.2 }, false);
     }
 
-    // Check Google Sheets connectivity on boot
+    // Check Google Sheets connectivity & sync history on boot
     checkSheetConnection();
 
-    // Set 1-minute interval heartbeat to check Google Sheets status
+    // 1-Minute Heartbeat to check Sheet connection and sync
     setInterval(checkSheetConnection, 60000);
 
     // Initial fetch from NOAA
@@ -157,23 +156,55 @@ function saveGasUrl() {
     }
 }
 
+// JSONP Helper to bypass CORS when fetching history from Google Sheets
+function fetchHistoryViaJSONP() {
+    return new Promise((resolve, reject) => {
+        const url = localStorage.getItem('solar_gas_url') || GAS_ALERT_URL;
+        if (!url) {
+            reject('No URL configured');
+            return;
+        }
+
+        const callbackName = 'sheetCallback_' + Math.round(Math.random() * 100000);
+        const timer = setTimeout(() => {
+            cleanup();
+            reject('Timeout');
+        }, 10000);
+
+        window[callbackName] = function(result) {
+            clearTimeout(timer);
+            cleanup();
+            resolve(result);
+        };
+
+        function cleanup() {
+            delete window[callbackName];
+            const scriptEl = document.getElementById(callbackName);
+            if (scriptEl) scriptEl.remove();
+        }
+
+        const script = document.createElement('script');
+        script.id = callbackName;
+        script.src = `${url}?callback=${callbackName}`;
+        script.onerror = () => {
+            clearTimeout(timer);
+            cleanup();
+            reject('Script load error');
+        };
+        document.body.appendChild(script);
+    });
+}
+
 // 1-Minute Connection Health Check & Auto-Sync Engine
 async function checkSheetConnection() {
-    const url = localStorage.getItem('solar_gas_url') || GAS_ALERT_URL;
-    if (!url) {
-        isSheetConnected = false;
-        return;
-    }
-
     try {
-        const response = await fetch(url, { method: 'GET' });
-        const result = await response.json();
+        const result = await fetchHistoryViaJSONP();
 
-        if (result.status === 'success') {
+        if (result && result.status === 'success') {
             const wasDisconnected = !isSheetConnected;
             isSheetConnected = true;
 
-            // Sync down: Merge sheet history with local storage
+            // Sync down: If sheet has history, merge/update local storage
             if (result.history && result.history.length > 0) {
                 const sheetHistory = result.history.map(row => {
                     const rawDate = new Date(row[0]);
@@ -192,7 +223,7 @@ async function checkSheetConnection() {
                 }
             }
 
-            // Sync up: Flush any offline queued data to Sheets
+            // Sync up: Flush any offline queued items
             if (wasDisconnected || offlineQueue.length > 0) {
                 flushOfflineQueue();
             }
@@ -200,7 +231,7 @@ async function checkSheetConnection() {
             isSheetConnected = false;
         }
     } catch (e) {
-        console.warn('Google Sheets unreachable. Running in Local-Only Mode.', e);
+        console.warn('Google Sheets unreachable via JSONP. Running in Local-Only Mode.', e);
         isSheetConnected = false;
     }
 }
@@ -349,7 +380,7 @@ async function fetchSolarObservationData() {
     } catch (e) { console.warn('NOAA 3-Day Kp Model fetch failed', e); }
 }
 
-// Main Data Ingestion (with Plasma Multi-Endpoint Fallback)
+// Main Data Ingestion (with Plasma Fallback)
 async function fetchData(isTick = false) {
     if (isSimulationMode) {
         loadSimulationData(isTick);
@@ -377,13 +408,11 @@ async function fetchData(isTick = false) {
             xrayFlux = parseFloat(latest.flux || 1e-7);
         } catch (e) { console.warn('X-ray fetch failed', e); }
 
-        // Robust Solar Wind Plasma Fetch with Fallback
         let windSpeed = 410;
         let windDensity = 5.2;
         try {
             let windRes = await fetch(ENDPOINTS.solarWind1Day);
             if (!windRes.ok) {
-                // Fallback to 7-day plasma endpoint if 1-day returns 404
                 windRes = await fetch(ENDPOINTS.solarWind7Day);
             }
             if (windRes.ok) {
