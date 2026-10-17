@@ -15,10 +15,13 @@ let weatherChart = null;
 let currentChartType = 'kp';      // 'kp' or 'flare'
 let currentTimeRange = '30m';     // '30m' or '24h'
 
-// Rolling history buffer
+// State tracking for Sheet Connection
+let isSheetConnected = false;
+let offlineQueue = [];
+
+// Rolling history buffer (holds 360 points = 30 minutes of data at 5-second intervals)
 let telemetryHistory = [];
 
-// Storage for satellite solar observations
 let latestObservationalData = {
     bz: 0,
     noaaMClassProb: null,
@@ -33,38 +36,51 @@ const savedDate = localStorage.getItem('solar_date');
 let previousKp = null;
 let previousFlareScore = null;
 
+// Initial Local Storage Load (Local-First Priority)
 if (savedDate === todayUtcStr) {
     try {
+        const savedHistory = localStorage.getItem('solar_history');
+        if (savedHistory) telemetryHistory = JSON.parse(savedHistory);
+
         const savedKp = localStorage.getItem('solar_prev_kp');
         if (savedKp !== null) previousKp = parseFloat(savedKp);
 
         const savedFlare = localStorage.getItem('solar_prev_flare');
         if (savedFlare !== null) previousFlareScore = parseFloat(savedFlare);
+
+        const savedQueue = localStorage.getItem('solar_offline_queue');
+        if (savedQueue) offlineQueue = JSON.parse(savedQueue);
     } catch (e) {
-        console.warn('Error loading saved storage:', e);
+        console.warn('Error loading saved local storage:', e);
     }
 } else {
+    localStorage.removeItem('solar_history');
     localStorage.removeItem('solar_prev_kp');
     localStorage.removeItem('solar_prev_flare');
+    localStorage.removeItem('solar_offline_queue');
     localStorage.setItem('solar_date', todayUtcStr);
 }
-// ------------------------------------------------
 
-// Initialize App safely
-document.addEventListener('DOMContentLoaded', async () => {
+// App Initialization
+document.addEventListener('DOMContentLoaded', () => {
     initClock();
     initChart();
     initEmailIntegration();
 
-    // Fetch existing historical logs from Google Sheets on startup!
-    await fetchHistoryFromSheets();
-
-    // Baseline render if empty
-    if (telemetryHistory.length === 0) {
+    // Baseline render from Local Data immediately
+    if (telemetryHistory.length > 0) {
+        updateChartDisplay();
+    } else {
         updateUI({ kp: 2.0, xrayFlux: 1e-7, solarWindSpeed: 410, solarWindDensity: 5.2 }, false);
     }
 
-    // Initial manual fetch from NOAA
+    // Check Google Sheets connectivity on boot
+    checkSheetConnection();
+
+    // Set 1-minute interval heartbeat to check Google Sheets status
+    setInterval(checkSheetConnection, 60000);
+
+    // Initial fetch from NOAA
     fetchData(false);
 
     // Independent 5-second background telemetry ticker
@@ -133,40 +149,81 @@ function saveGasUrl() {
     const url = inputEl ? inputEl.value.trim() : '';
     if (url) {
         localStorage.setItem('solar_gas_url', url);
-        alert('Google Apps Script URL saved successfully!');
+        alert('Google Apps Script URL saved!');
+        checkSheetConnection();
     } else {
         alert('Please enter a valid Web App URL.');
     }
 }
 
-// Fetch Past History from Google Sheets on Startup
-async function fetchHistoryFromSheets() {
+// 1-Minute Connection Health Check & Auto-Sync Engine
+async function checkSheetConnection() {
+    const url = localStorage.getItem('solar_gas_url') || GAS_ALERT_URL;
+    if (!url) {
+        isSheetConnected = false;
+        return;
+    }
+
+    try {
+        const response = await fetch(url, { method: 'GET' });
+        const result = await response.json();
+
+        if (result.status === 'success') {
+            const wasDisconnected = !isSheetConnected;
+            isSheetConnected = true;
+
+            // Sync down: Merge sheet history with local storage
+            if (result.history && result.history.length > 0) {
+                const sheetHistory = result.history.map(row => {
+                    const rawDate = new Date(row[0]);
+                    const timeStr = !isNaN(rawDate) ? rawDate.toUTCString().slice(17, 25) : '00:00:00';
+                    const kp = parseFloat(row[1]) || 2.0;
+                    const flareStr = row[2] || 'C1.00';
+                    const flux = parseFloat(row[3]) || 1e-7;
+                    const flareScore = getFlareScore(flux);
+                    return { time: timeStr, kp, flux, flareScore, flareStr };
+                });
+
+                if (sheetHistory.length > 0) {
+                    telemetryHistory = sheetHistory.slice(-360);
+                    localStorage.setItem('solar_history', JSON.stringify(telemetryHistory));
+                    updateChartDisplay();
+                }
+            }
+
+            // Sync up: Flush any offline queued data to Sheets
+            if (wasDisconnected || offlineQueue.length > 0) {
+                flushOfflineQueue();
+            }
+        } else {
+            isSheetConnected = false;
+        }
+    } catch (e) {
+        console.warn('Google Sheets unreachable. Running in Local-Only Mode.', e);
+        isSheetConnected = false;
+    }
+}
+
+// Flush Offline Queued Entries to Google Sheets
+async function flushOfflineQueue() {
+    if (offlineQueue.length === 0) return;
+
     const url = localStorage.getItem('solar_gas_url') || GAS_ALERT_URL;
     if (!url) return;
 
     try {
-        const response = await fetch(url);
-        const result = await response.json();
-        
-        if (result.status === 'success' && result.history && result.history.length > 0) {
-            telemetryHistory = result.history.map(row => {
-                const rawDate = new Date(row[0]);
-                const timeStr = !isNaN(rawDate) ? rawDate.toUTCString().slice(17, 25) : '00:00:00';
-                const kp = parseFloat(row[1]) || 2.0;
-                const flareStr = row[2] || 'C1.00';
-                const flux = parseFloat(row[3]) || 1e-7;
-                const flareScore = getFlareScore(flux);
-                return { time: timeStr, kp, flux, flareScore, flareStr };
-            });
+        await fetch(url, {
+            method: 'POST',
+            mode: 'no-cors',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'log_batch', items: offlineQueue })
+        });
 
-            // Keep latest 360 points for 30m chart buffer
-            if (telemetryHistory.length > 360) {
-                telemetryHistory = telemetryHistory.slice(-360);
-            }
-            updateChartDisplay();
-        }
+        // Clear queue on success
+        offlineQueue = [];
+        localStorage.removeItem('solar_offline_queue');
     } catch (e) {
-        console.warn('Could not fetch historical data from Google Sheets:', e);
+        console.warn('Failed to flush offline queue:', e);
     }
 }
 
@@ -222,19 +279,17 @@ async function sendTestAlert() {
     }
 }
 
-// Webhook & Logging Dispatcher
+// Webhook & Logging Dispatcher (Dual Local & Sheet Sync)
 async function sendWebhookAlert(kpVal, flareVal, windSpeed, windDensity, isAlertTrigger = false) {
     const isMOrAbove = flareVal.startsWith('M') || flareVal.startsWith('X');
     
     if (isAlertTrigger && kpVal < 4.0 && !isMOrAbove) {
-        return; // Silently abort email trigger for quiet conditions
+        return;
     }
 
     const url = localStorage.getItem('solar_gas_url') || GAS_ALERT_URL;
-    if (!url) return;
-
-    const payload = {
-        action: 'log_and_alert',
+    const itemData = {
+        time: new Date().toUTCString(),
         kp: kpVal.toFixed(2),
         flare: flareVal,
         solarWindSpeed: Math.round(windSpeed),
@@ -242,15 +297,27 @@ async function sendWebhookAlert(kpVal, flareVal, windSpeed, windDensity, isAlert
         isAlert: isAlertTrigger
     };
 
+    // If Sheet is disconnected, save to local offline queue
+    if (!isSheetConnected || !url) {
+        offlineQueue.push(itemData);
+        if (offlineQueue.length > 500) offlineQueue.shift();
+        localStorage.setItem('solar_offline_queue', JSON.stringify(offlineQueue));
+        return;
+    }
+
     try {
         await fetch(url, {
             method: 'POST',
             mode: 'no-cors',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+            body: JSON.stringify(itemData)
         });
     } catch (e) {
-        console.warn('Google Sheets / Webhook dispatch failed:', e);
+        console.warn('Webhook transmission failed. Saving to local queue.', e);
+        offlineQueue.push(itemData);
+        if (offlineQueue.length > 500) offlineQueue.shift();
+        localStorage.setItem('solar_offline_queue', JSON.stringify(offlineQueue));
+        isSheetConnected = false;
     }
 }
 
@@ -291,7 +358,7 @@ async function fetchData(isTick = false) {
     }
 
     try {
-        setConnectionStatus('loading', 'Updating NOAA Telemetry & Solar APIs...');
+        setConnectionStatus('loading', 'Updating NOAA Telemetry...');
 
         await fetchSolarObservationData();
 
@@ -328,7 +395,8 @@ async function fetchData(isTick = false) {
             solarWindDensity: windDensity
         }, isTick);
 
-        setConnectionStatus('live', 'NOAA Satellite API: Live');
+        const sheetStatus = isSheetConnected ? ' | Sheet Connected' : ' | Local-Only Mode';
+        setConnectionStatus('live', `NOAA API: Live${sheetStatus}`);
     } catch (error) {
         console.warn('Network error. Switching to simulation.', error);
         setConnectionStatus('sim', 'API Offline (Simulation Active)');
@@ -494,7 +562,6 @@ function evaluateSoundTriggers(currentKp, currentFlux, windSpeed, windDensity) {
     localStorage.setItem('solar_prev_kp', previousKp);
     localStorage.setItem('solar_prev_flare', previousFlareScore);
 
-    // Send payload to Google Sheets (logs telemetry every tick; sends email only if isAlertTrigger is true)
     sendWebhookAlert(currentKp, detailedFlare, windSpeed, windDensity, isAlertTrigger);
 }
 
@@ -513,6 +580,10 @@ function updateUI(data, isTick = true) {
         const nowStr = new Date().toUTCString().slice(17, 25);
         telemetryHistory.push({ time: nowStr, kp: preciseKp, flux: flux, flareScore: flareScore, flareStr: flareStr });
         if (telemetryHistory.length > 360) telemetryHistory.shift();
+
+        // Save immediately to local storage
+        localStorage.setItem('solar_history', JSON.stringify(telemetryHistory));
+        localStorage.setItem('solar_date', new Date().toISOString().slice(0, 10));
     }
 
     const probs = calculateProbabilities(windSpeed, windDensity, flux, preciseKp);
