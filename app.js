@@ -192,7 +192,7 @@ async function sendTestAlert() {
     }
 }
 
-// Webhook & Google Sheets Logger (Bypasses CORS via no-cors POST)
+// Webhook & Google Sheets Logger (Clean POST without preflight headers)
 async function sendWebhookAlert(kpVal, flareVal, windSpeed, windDensity, isAlertTrigger = false) {
     const isMOrAbove = flareVal.startsWith('M') || flareVal.startsWith('X');
     
@@ -216,7 +216,6 @@ async function sendWebhookAlert(kpVal, flareVal, windSpeed, windDensity, isAlert
         await fetch(url, {
             method: 'POST',
             mode: 'no-cors',
-            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
     } catch (e) {
