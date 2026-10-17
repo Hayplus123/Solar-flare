@@ -76,10 +76,16 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initial fetch from NOAA
     fetchData(false);
 
-    // 1-Minute Telemetry Ticker (Logs to Sheet & updates UI)
+    // Precision 5-Second Aligned Ticker (Fires on seconds ending in 0 or 5)
+    let lastFetchedSecond = -1;
     setInterval(() => {
-        fetchData(true);
-    }, 60000);
+        const now = new Date();
+        const sec = now.getSeconds();
+        if (sec % 5 === 0 && sec !== lastFetchedSecond) {
+            lastFetchedSecond = sec;
+            fetchData(true); // Polls NOAA, updates UI, and logs to sheet
+        }
+    }, 1000);
 
     // 30-Second Connectivity & Sheet Sync Heartbeat
     setInterval(() => {
@@ -96,6 +102,15 @@ document.addEventListener('DOMContentLoaded', () => {
             refreshBtn.innerHTML = '<i class="fa-solid fa-rotate"></i>';
         });
     }
+
+    const toggleModeBtn = document.getElementById('toggle-mode-btn');
+    if (toggleModeBtn) toggleModeBtn.addEventListener('click', toggleSimulationMode);
+
+    const saveGasBtn = document.getElementById('save-gas-btn');
+    if (saveGasBtn) saveGasBtn.addEventListener('click', saveGasUrl);
+
+    const testAlertBtn = document.getElementById('test-alert-btn');
+    if (testAlertBtn) testAlertBtn.addEventListener('click', sendTestAlert);
 
     // Chart metric tabs
     document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -160,11 +175,9 @@ async function checkConnectionAndSync() {
         const csvText = await response.text();
         const rows = csvText.split('\n').map(row => row.split(',').map(cell => cell.replace(/^"|"$/g, '')));
         
-        // Skip header row if present, parse valid rows
         const validRows = rows.slice(1).filter(r => r.length >= 4 && r[1] !== undefined);
         
         if (validRows.length > 0) {
-            // Map sheet rows into telemetry history format
             telemetryHistory = validRows.slice(-360).map(r => {
                 const timeRaw = new Date(r[0]);
                 const timeStr = !isNaN(timeRaw) ? timeRaw.toUTCString().slice(17, 25) : '00:00:00';
@@ -187,7 +200,6 @@ async function checkConnectionAndSync() {
         isOnline = true;
         setConnectionStatus('live', 'NOAA API: Live | Synced with Sheet');
 
-        // If we were offline, flush any queued items
         if (offlineQueue.length > 0) {
             flushOfflineQueue();
         }
@@ -220,7 +232,7 @@ async function flushOfflineQueue() {
     }
 }
 
-// Webhook & Google Sheets Logger with Offline Fallback Queue
+// Webhook & Google Sheets Logger with Offline Fallback Queue (Using ISO Timestamps)
 async function sendWebhookAlert(kpVal, flareVal, windSpeed, windDensity, isAlertTrigger = false) {
     const isMOrAbove = flareVal.startsWith('M') || flareVal.startsWith('X');
     
@@ -232,7 +244,7 @@ async function sendWebhookAlert(kpVal, flareVal, windSpeed, windDensity, isAlert
     if (!url) return;
 
     const payload = {
-        time: new Date().toUTCString(),
+        time: new Date().toISOString(), // Clean ISO timestamp without commas
         kp: kpVal.toFixed(2),
         flare: flareVal,
         solarWindSpeed: Math.round(windSpeed),
@@ -279,7 +291,7 @@ async function sendTestAlert() {
     }
 
     const payload = {
-        time: new Date().toISOString(), // <--- Changed from toUTCString()
+        time: new Date().toISOString(), // Clean ISO timestamp without commas
         kp: kpVal.toFixed(2),
         flare: flareText,
         solarWindSpeed: Math.round(windSpeed),
@@ -336,7 +348,7 @@ async function fetchSolarObservationData() {
     } catch (e) { console.warn('NOAA 3-Day Kp Model fetch failed', e); }
 }
 
-// Main Data Ingestion (1-Minute Interval)
+// Main Data Ingestion
 async function fetchData(isTick = false) {
     if (isSimulationMode) {
         loadSimulationData(isTick);
