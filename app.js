@@ -9,15 +9,18 @@ const ENDPOINTS = {
 };
 
 const GAS_ALERT_URL = 'https://script.google.com/macros/s/AKfycbys99AC4kvUTWytVrMur4mPFBqxnd2r4tpYPLi7TbOcxscCdccETYKq8JJCUa8USHtr/exec';
+// Google Sheets Public CSV Export URL for instant, CORS-friendly history syncing
+const SHEET_CSV_URL = 'https://docs.google.com/spreadsheets/d/1uVUNHmMixQ4FHuhcjaZVHm2jGaB7an5TQ04h72rzCXA/gviz/tq?tqx=out:csv&sheet=Telemetry_Logs';
 
 let isSimulationMode = false;
 let weatherChart = null;
 let currentChartType = 'kp';      // 'kp' or 'flare'
 let currentTimeRange = '30m';     // '30m' or '24h'
 
-// Rolling history buffer & Offline Queue (Local-First Resilience)
+// Rolling history buffer & Offline Queue
 let telemetryHistory = [];
 let offlineQueue = [];
+let isOnline = navigator.onLine;
 
 let latestObservationalData = {
     bz: 0,
@@ -73,10 +76,15 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initial fetch from NOAA
     fetchData(false);
 
-    // Independent 5-second background telemetry ticker
+    // 1-Minute Telemetry Ticker (Logs to Sheet & updates UI)
     setInterval(() => {
         fetchData(true);
-    }, 5000);
+    }, 60000);
+
+    // 30-Second Connectivity & Sheet Sync Heartbeat
+    setInterval(() => {
+        checkConnectionAndSync();
+    }, 30000);
 
     // Event Listeners
     const refreshBtn = document.getElementById('refresh-btn');
@@ -145,7 +153,54 @@ function saveGasUrl() {
     }
 }
 
-// Flush Offline Queued Entries to Google Sheets when reconnected
+// 30-Second Heartbeat: Check connection & sync history from Google Sheets CSV
+async function checkConnectionAndSync() {
+    try {
+        const response = await fetch(SHEET_CSV_URL, { cache: 'no-store' });
+        if (!response.ok) throw new Error('Network response was not ok');
+        
+        const csvText = await response.text();
+        const rows = csvText.split('\n').map(row => row.split(',').map(cell => cell.replace(/^"|"$/g, '')));
+        
+        // Skip header row if present, parse valid rows
+        const validRows = rows.slice(1).filter(r => r.length >= 4 && r[1] !== undefined);
+        
+        if (validRows.length > 0) {
+            // Map sheet rows into telemetry history format
+            telemetryHistory = validRows.slice(-360).map(r => {
+                const timeRaw = new Date(r[0]);
+                const timeStr = !isNaN(timeRaw) ? timeRaw.toUTCString().slice(17, 25) : '00:00:00';
+                const kp = parseFloat(r[1]) || 2.0;
+                const flareStr = r[2] || 'C1.00';
+                const flux = parseFloat(r[3]) || 1e-7;
+                return {
+                    time: timeStr,
+                    kp: kp,
+                    flux: flux,
+                    flareScore: getFlareScore(flux),
+                    flareStr: flareStr
+                };
+            });
+
+            localStorage.setItem('solar_history', JSON.stringify(telemetryHistory));
+            updateChartDisplay();
+        }
+
+        isOnline = true;
+        setConnectionStatus('live', 'NOAA API: Live | Synced with Sheet');
+
+        // If we were offline, flush any queued items
+        if (offlineQueue.length > 0) {
+            flushOfflineQueue();
+        }
+    } catch (e) {
+        isOnline = false;
+        setConnectionStatus('sim', 'Offline Mode (Local Data Active)');
+        console.warn('Sheet sync heartbeat failed, running local-first:', e);
+    }
+}
+
+// Flush Offline Queued Entries to Google Sheets
 async function flushOfflineQueue() {
     if (offlineQueue.length === 0) return;
     const url = localStorage.getItem('solar_gas_url') || GAS_ALERT_URL;
@@ -193,10 +248,6 @@ async function sendWebhookAlert(kpVal, flareVal, windSpeed, windDensity, isAlert
             mode: 'no-cors',
             body: JSON.stringify(payload)
         });
-
-        if (offlineQueue.length > 0) {
-            flushOfflineQueue();
-        }
     } catch (e) {
         console.warn('Network offline. Queuing telemetry point locally.', e);
         offlineQueue.push(payload);
@@ -287,7 +338,7 @@ async function fetchSolarObservationData() {
     } catch (e) { console.warn('NOAA 3-Day Kp Model fetch failed', e); }
 }
 
-// Main Data Ingestion
+// Main Data Ingestion (1-Minute Interval)
 async function fetchData(isTick = false) {
     if (isSimulationMode) {
         loadSimulationData(isTick);
