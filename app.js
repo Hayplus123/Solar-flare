@@ -2,7 +2,8 @@
 const ENDPOINTS = {
     kp: 'https://services.swpc.noaa.gov/json/planetary_k_index_1m.json',
     xray: 'https://services.swpc.noaa.gov/json/goes/primary/xrays-6-hour.json',
-    solarWind: 'https://services.swpc.noaa.gov/products/solar-wind/plasma-1-day.json',
+    solarWind1Day: 'https://services.swpc.noaa.gov/products/solar-wind/plasma-1-day.json',
+    solarWind7Day: 'https://services.swpc.noaa.gov/products/solar-wind/plasma-7-day.json',
     imf: 'https://services.swpc.noaa.gov/products/solar-wind/mag-1-day.json',
     noaa3DayKp: 'https://services.swpc.noaa.gov/products/noaa-planetary-k-index-forecast.json',
     noaaFlareProb: 'https://services.swpc.noaa.gov/json/solar_probabilities.json'
@@ -219,7 +220,6 @@ async function flushOfflineQueue() {
             body: JSON.stringify({ action: 'log_batch', items: offlineQueue })
         });
 
-        // Clear queue on success
         offlineQueue = [];
         localStorage.removeItem('solar_offline_queue');
     } catch (e) {
@@ -297,7 +297,6 @@ async function sendWebhookAlert(kpVal, flareVal, windSpeed, windDensity, isAlert
         isAlert: isAlertTrigger
     };
 
-    // If Sheet is disconnected, save to local offline queue
     if (!isSheetConnected || !url) {
         offlineQueue.push(itemData);
         if (offlineQueue.length > 500) offlineQueue.shift();
@@ -350,7 +349,7 @@ async function fetchSolarObservationData() {
     } catch (e) { console.warn('NOAA 3-Day Kp Model fetch failed', e); }
 }
 
-// Main Data Ingestion
+// Main Data Ingestion (with Plasma Multi-Endpoint Fallback)
 async function fetchData(isTick = false) {
     if (isSimulationMode) {
         loadSimulationData(isTick);
@@ -378,15 +377,24 @@ async function fetchData(isTick = false) {
             xrayFlux = parseFloat(latest.flux || 1e-7);
         } catch (e) { console.warn('X-ray fetch failed', e); }
 
+        // Robust Solar Wind Plasma Fetch with Fallback
         let windSpeed = 410;
         let windDensity = 5.2;
         try {
-            const windRes = await fetch(ENDPOINTS.solarWind);
-            const windData = await windRes.json();
-            const latest = windData[windData.length - 1];
-            windDensity = parseFloat(latest[1] || 5.2);
-            windSpeed = parseFloat(latest[2] || 410);
-        } catch (e) { console.warn('Wind fetch failed', e); }
+            let windRes = await fetch(ENDPOINTS.solarWind1Day);
+            if (!windRes.ok) {
+                // Fallback to 7-day plasma endpoint if 1-day returns 404
+                windRes = await fetch(ENDPOINTS.solarWind7Day);
+            }
+            if (windRes.ok) {
+                const windData = await windRes.json();
+                const latest = windData[windData.length - 1];
+                windDensity = parseFloat(latest[1] || 5.2);
+                windSpeed = parseFloat(latest[2] || 410);
+            }
+        } catch (e) {
+            console.warn('Solar wind plasma fetch failed, using defaults', e);
+        }
 
         updateUI({
             kp: kpVal,
@@ -581,7 +589,6 @@ function updateUI(data, isTick = true) {
         telemetryHistory.push({ time: nowStr, kp: preciseKp, flux: flux, flareScore: flareScore, flareStr: flareStr });
         if (telemetryHistory.length > 360) telemetryHistory.shift();
 
-        // Save immediately to local storage
         localStorage.setItem('solar_history', JSON.stringify(telemetryHistory));
         localStorage.setItem('solar_date', new Date().toISOString().slice(0, 10));
     }
