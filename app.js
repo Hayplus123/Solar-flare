@@ -244,7 +244,7 @@ async function sendWebhookAlert(kpVal, flareVal, windSpeed, windDensity, isAlert
     if (!url) return;
 
     const payload = {
-        time: new Date().toISOString(), // Clean ISO timestamp without commas
+        time: new Date().toISOString(),
         kp: kpVal.toFixed(2),
         flare: flareVal,
         solarWindSpeed: Math.round(windSpeed),
@@ -291,7 +291,7 @@ async function sendTestAlert() {
     }
 
     const payload = {
-        time: new Date().toISOString(), // Clean ISO timestamp without commas
+        time: new Date().toISOString(),
         kp: kpVal.toFixed(2),
         flare: flareText,
         solarWindSpeed: Math.round(windSpeed),
@@ -655,14 +655,15 @@ function initChart() {
                 tooltip: {
                     callbacks: {
                         label: function(context) {
+                            const val = Number(context.raw || 0);
                             if (currentChartType === 'kp') {
-                                return `Kp Index: ${context.raw.toFixed(2)}`;
+                                return `Kp Index: ${val.toFixed(2)}`;
                             } else {
                                 const index = context.dataIndex;
-                                if (currentTimeRange === '30m' && telemetryHistory[index]) {
+                                if (currentTimeRange === '30m' && telemetryHistory[index] && telemetryHistory[index].flareStr) {
                                     return `Solar Flare: ${telemetryHistory[index].flareStr}`;
                                 } else {
-                                    return `Solar Flare Level: Class Score ${context.raw.toFixed(2)}`;
+                                    return `Solar Flare Level: Class Score ${val.toFixed(2)}`;
                                 }
                             }
                         }
@@ -705,17 +706,33 @@ function updateChartDisplay() {
     let dataPoints = [];
 
     if (currentTimeRange === '30m') {
-        if (telemetryHistory.length === 0) return;
-        labels = telemetryHistory.map(item => item.time);
-        dataPoints = telemetryHistory.map(item => currentChartType === 'kp' ? item.kp : item.flareScore);
-    } else {
-        labels = ['-24h', '-20h', '-16h', '-12h', '-8h', '-4h', 'Now'];
-        const latestItem = telemetryHistory.length > 0 ? telemetryHistory[telemetryHistory.length - 1] : { kp: 2.33, flareScore: 1.50 };
-        
-        if (currentChartType === 'kp') {
-            dataPoints = [2.00, 2.33, 2.67, 3.00, 2.33, 2.00, latestItem.kp];
+        if (telemetryHistory.length === 0) {
+            labels = ['Now'];
+            dataPoints = [2.00];
         } else {
-            dataPoints = [1.20, 1.45, 2.10, 2.80, 1.60, 1.30, latestItem.flareScore];
+            labels = telemetryHistory.map(item => item.time);
+            dataPoints = telemetryHistory.map(item => currentChartType === 'kp' ? (Number(item.kp) || 0) : (Number(item.flareScore) || 0));
+        }
+    } else {
+        // 24 Hour View: Dynamically sample real history from telemetryHistory
+        if (telemetryHistory.length > 0) {
+            const step = Math.max(1, Math.floor(telemetryHistory.length / 7));
+            const sampled = [];
+            const sampleLabels = [];
+            for (let i = 0; i < telemetryHistory.length; i += step) {
+                sampled.push(telemetryHistory[i]);
+                sampleLabels.push(telemetryHistory[i].time);
+            }
+            if (sampled[sampled.length - 1] !== telemetryHistory[telemetryHistory.length - 1]) {
+                sampled.push(telemetryHistory[telemetryHistory.length - 1]);
+                sampleLabels.push(telemetryHistory[telemetryHistory.length - 1].time);
+            }
+
+            labels = sampleLabels;
+            dataPoints = sampled.map(item => currentChartType === 'kp' ? (Number(item.kp) || 0) : (Number(item.flareScore) || 0));
+        } else {
+            labels = ['-24h', '-18h', '-12h', '-6h', 'Now'];
+            dataPoints = currentChartType === 'kp' ? [2.00, 2.33, 2.67, 3.00, 2.00] : [1.20, 1.45, 2.10, 1.60, 1.30];
         }
     }
 
@@ -734,7 +751,7 @@ function updateChartDisplay() {
         weatherChart.data.datasets[0].backgroundColor = 'rgba(16, 185, 129, 0.1)';
         
         weatherChart.options.scales.y.min = 0;
-        const maxFlare = Math.max(...dataPoints, 2.0);
+        const maxFlare = dataPoints.length > 0 ? Math.max(...dataPoints, 2.0) : 2.0;
         weatherChart.options.scales.y.max = Math.min(6, Math.ceil(maxFlare + 1)); 
     }
 
