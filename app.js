@@ -617,7 +617,6 @@ function updateChartDisplay() {
         labels = ['-24h', '-20h', '-16h', '-12h', '-8h', '-4h', 'Now'];
         const latestItem = telemetryHistory.length > 0 ? telemetryHistory[telemetryHistory.length - 1] : { kp: 2.33, flareScore: 1.50 };
         
-        |
         if (currentChartType === 'kp') {
             dataPoints = [2.00, 2.33, 2.67, 3.00, 2.33, 2.00, latestItem.kp];
         } else {
